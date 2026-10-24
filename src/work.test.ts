@@ -91,7 +91,7 @@ test('covered and confident work posts without a person; the log says which poli
   balanced(w);
   const fee=w.journals.find((row:any)=>row.lines.some((line:any)=>line.account_id==='bank-fee-expense'));
   expect(fee.lines).toStrictEqual([{account_id:'unapplied-cash',debit_minor:5797500,credit_minor:0,currency:'USD'},{account_id:'bank-fee-expense',debit_minor:2500,credit_minor:0,currency:'USD'},{account_id:'receivables',debit_minor:0,credit_minor:5800000,currency:'USD'}]);
-  expect(summarize(w).unapplied_cash_minor).toBe(0);
+  expect((summarize(w) as any).unapplied_cash_minor).toBe(0);
   const why=whyTimeline(w,'INV-2003');
   expect(why.timeline.map((row:any)=>[row.role,row.action])).toStrictEqual([['sync','create'],['ai_agent','propose'],['policy_engine','approve'],['gateway','post']]);
   expect(why.timeline[2].why).toMatch(/pol-00\d v1/);expect(why.journals.map((row:any)=>row.source_type)).toStrictEqual(['invoice','operation']);
@@ -149,7 +149,7 @@ test('duplicate cash is held, unidentified cash is asked about, and outages dela
   expect(w.workLog.at(-1)).toMatchObject({action:'post',allowed:false});
   act(w,{type:'set_fault',system:'netsuite',mode:'healthy'});
   expect(item(w,'JPM-88310526').state).toBe('posted');expect(w.bankReceipts.find((row:any)=>row.bank_reference==='JPM-88310526').status).toBe('on_account');
-  expect(summarize(w).unapplied_cash_minor).toBeGreaterThanOrEqual(128400);balanced(w);
+  expect((summarize(w) as any).unapplied_cash_minor).toBeGreaterThanOrEqual(128400);balanced(w);
   const view:any=workItemView(w,item(w,'JPM-88310519').id,{find});
   expect(view.features.payer.name_matches).toStrictEqual([]);
   expect(view.candidate_invoices.filter((row:any)=>row.reasons.includes('open balance equals the receipt')).map((row:any)=>row.invoice_id).sort()).toStrictEqual(['INV-2015','INV-2016']);

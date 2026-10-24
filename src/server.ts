@@ -18,7 +18,8 @@ import {runSeat} from './seat.ts';
 import type {SeatMode} from './seat.ts';
 import {agentQueue,agentWorkActions,controllerWorkActions,humanWorkActions,precedentSearch,whyTimeline,workBriefing,workItemView,GATEWAY,DISPATCHER} from './work.ts';
 import {queryHistory,HistoryQueryError} from './history-sql.ts';
-import {scoreCashApplication} from './cash-score.ts';
+import {scoreSeat} from './cash-score.ts';
+import {domainByKind,domainFor} from './domains.ts';
 import {SlackBridge,loadSlackConfig} from './slack.ts';
 import {argonPhrase,colleagueTick} from './colleague.ts';
 import type {SlackDeps} from './slack.ts';
@@ -47,8 +48,6 @@ export type ServiceOptions = { database?: string; baseUrl?: string; agentEnabled
   /** Test seam for simulated colleagues' wording; decisions always come from the case file. */
   colleaguePhrase?: Parameters<typeof colleagueTick>[3] };
 type RunSpec={kind:'instruction';instruction:string;actor:string;requestId?:string}|{kind:'seat';mode:SeatMode;items:string[];reason:string;trigger:string;actor:string;requestId?:string};
-/** The seat reads the bank, the ERP and the mailbox; it waits until all three are connected. */
-export const SEAT_SYSTEMS=['bank','netsuite','gmail'];
 export async function createService(options: ServiceOptions = {}) {
   const baseUrl = options.baseUrl ?? 'http://127.0.0.1:24300';
   // Cookies ignore ports. Isolate concurrently running local UI instances.
@@ -92,8 +91,8 @@ export async function createService(options: ServiceOptions = {}) {
   }
   const snapshot = (id: string) => {
     // The imported history and the answer key stay server-side; the console gets counts.
-    const full = store.world(id), summary = summarize(full), {cashHistory,cashCaseKey,...world} = full;
-    if (cashHistory) Object.assign(world, { cash_history_counts: { invoices: cashHistory.invoices.length, receipts: cashHistory.receipts.length, applications: cashHistory.applications.length, keg_returns: cashHistory.keg_returns.length, as_of: cashHistory.as_of } });
+    const full = store.world(id), summary = summarize(full), world: any = { ...full }, domain = full.seat ? domainByKind(full.kind) : undefined;
+    if (domain) { for (const key of domain.hidden) delete world[key]; const counts = domain.historySummary(full); Object.assign(world, { history_counts: counts, cash_history_counts: counts }); }
     return { world, summary, connections: oauth.connections(id), runs: store.all('runs').filter(r => r.world === id).map(({ token, ...r }) => r),
       webhooks: { subscriptions: hooks.list(id), deliveries: hooks.recent(id, 50), receiver: { mode: store.get('receiver-modes', id)?.mode ?? 'accept', receipts: store.all('webhook-receipts').filter(r => r.world_id === id).slice(-50) } } };
   };
@@ -164,7 +163,7 @@ export async function createService(options: ServiceOptions = {}) {
       if (updated !== current) store.put('runs', runId, updated);
       store.audit(id, 'agent.trace', { run_id: runId, ...e }, `agent:${runId}`);
     };
-    const work=spec.kind==='seat'?(options.seatRunner??runSeat)({worldId:id,baseUrl,token,mode:spec.mode,items:spec.items,reason:spec.reason,company:world.name,signal:abort.signal,onEvent}):runAgent({ worldId: id, baseUrl, token, instruction, signal: abort.signal, onEvent });
+    const work=spec.kind==='seat'?(options.seatRunner??runSeat)({worldId:id,baseUrl,token,mode:spec.mode,items:spec.items,reason:spec.reason,company:world.name,kind:world.kind,signal:abort.signal,onEvent}):runAgent({ worldId: id, baseUrl, token, instruction, signal: abort.signal, onEvent });
     const promise = work.then(result => {
       store.put('runs', runId, finishRun(store.get('runs', runId) ?? run, 'completed', new Date().toISOString(), result)); store.audit(id, 'agent.completed', { run_id: runId, ...result }, `agent:${runId}`);
       if(spec.kind==='seat')afterSeatRun(id,runId,spec,true);
@@ -201,7 +200,7 @@ export async function createService(options: ServiceOptions = {}) {
   function stalled(id:string){return [...stateFor(id).attempts].filter(([,row])=>row.count>=2).map(([item])=>item);}
   function seatStatus(id:string){
     const world=store.world(id);if(!world.seat)return undefined;
-    const connections=oauth.connections(id),missing=SEAT_SYSTEMS.filter(system=>connections.find((row:any)=>row.system===system)?.status!=='connected'),state=stateFor(id);
+    const connections=oauth.connections(id),missing=domainFor(world).seatSystems.filter(system=>connections.find((row:any)=>row.system===system)?.status!=='connected'),state=stateFor(id);
     const running=store.all('runs').find((row:any)=>row.world===id&&row.status==='running');
     return {on_duty:Boolean(world.seat.autonomy.enabled),agent_available:Boolean(options.seatRunner)||config().available,model:config().seatModel,effort:config().seatEffort,missing_connections:missing,running_run:running?.id??null,stalled_items:stalled(id),retry_at:state.retryAt>Date.now()?new Date(state.retryAt).toISOString():null,runs_last_hour:state.starts.filter(at=>at>Date.now()-3_600_000).length,max_runs_per_hour:options.maxSeatRunsPerHour??12};
   }
@@ -209,7 +208,7 @@ export async function createService(options: ServiceOptions = {}) {
    * seat's queue, and the dispatcher launches a run for it without anyone asking. */
   function nextSeatRun(id:string,world:any):Extract<RunSpec,{kind:'seat'}>|undefined{
     const blocked=new Set(stalled(id)),queue=agentQueue(world).filter((item:any)=>!blocked.has(item.id));
-    if(world.seat.onboarding?.status==='pending')return {kind:'seat',mode:'onboarding',items:queue.slice(0,6).map((item:any)=>item.id),reason:`No policies yet; ${world.cashHistory?.receipts?.length??0} historical receipts to learn from.`,trigger:'onboarding',actor:'dispatcher'};
+    if(world.seat.onboarding?.status==='pending')return {kind:'seat',mode:'onboarding',items:queue.slice(0,6).map((item:any)=>item.id),reason:`No policies yet; ${domainFor(world).historySummary(world).records} historical records to learn from.`,trigger:'onboarding',actor:'dispatcher'};
     if(!queue.length)return;
     const items=queue.slice(0,6),count=(state:string)=>items.filter((item:any)=>item.state===state).length,parts=[];
     if(count('new'))parts.push(`${count('new')} new (${[...new Set(items.filter((item:any)=>item.state==='new').map((item:any)=>item.kind==='follow_up'?'follow-up due':'bank line'))].join(', ')})`);
@@ -405,24 +404,25 @@ export async function createService(options: ServiceOptions = {}) {
         return new Response(rows.map(r => JSON.stringify(r)).join('\n') + '\n', { headers: { 'Content-Type': 'application/x-ndjson', 'Content-Disposition': `attachment; filename="${id}-audit.jsonl"` } });
       }
       if (route.startsWith('work') || route === 'why') {
-        if (!world.seat) throw new ServiceError(404, 'no_seat', 'This company has no cash-application seat.');
+        if (!world.seat) throw new ServiceError(404, 'no_seat', 'This company has no autonomous seat.');
         if (!actor || !['agent', 'controller'].includes(actor.role)) throw new ServiceError(403, 'work_access_denied');
-        // The seat reads the bank and the ERP only through connections the controller granted.
+        const domain = domainFor(world);
+        // The seat reads its systems of record only through connections the controller granted.
         const seatRead = (systems: string[]) => { if (actor!.role === 'agent') for (const system of systems) oauth.require(id, system, 'read', actor!); };
         const find = (rows: any[], key: any, label: string) => rows.find(row => row.id === key) ?? (() => { throw new ServiceError(404, 'not_found', `${label} not found`); })();
         if (route === 'work/briefing' && method === 'GET') return json({ ...workBriefing(world), dispatcher: seatStatus(id) });
         if (route === 'work/items' && method === 'GET') { const state = url.searchParams.get('state'); return json({ data: world.workItems.filter((item: any) => !state || item.state === state) }); }
-        if (parts[3] === 'work' && parts[4] === 'items' && parts.length === 6 && method === 'GET') { seatRead(['bank', 'netsuite']); return json(workItemView(world, decodeURIComponent(parts[5]), { find })); }
-        if (route === 'work/precedents' && method === 'GET') { const q = url.searchParams; return json({ data: precedentSearch(world, { customer_id: q.get('customer_id') ?? undefined, payer: q.get('payer') ?? undefined, kind: q.get('kind') ?? undefined, text: q.get('text') ?? undefined, limit: integer(q.get('limit'), 20, 1, 100) }) }); }
+        if (parts[3] === 'work' && parts[4] === 'items' && parts.length === 6 && method === 'GET') { seatRead(domain.readSystems.item); return json(workItemView(world, decodeURIComponent(parts[5]), { find })); }
+        if (route === 'work/precedents' && method === 'GET') { const q = url.searchParams; return json({ data: precedentSearch(world, { subject_id: q.get('subject_id') ?? q.get('customer_id') ?? undefined, counterparty: q.get('counterparty') ?? q.get('payer') ?? undefined, kind: q.get('kind') ?? undefined, text: q.get('text') ?? undefined, limit: integer(q.get('limit'), 20, 1, 100) }) }); }
         if (route === 'work/policies' && method === 'GET') return json({ data: world.policies });
         if (route === 'work/history' && method === 'POST') {
-          seatRead(['netsuite']); const input = await body(request);
+          seatRead(domain.readSystems.history); const input = await body(request);
           try { return json(await queryHistory(world, input.sql, { limit: typeof input.limit === 'number' ? input.limit : undefined })); }
           catch (error) { if (error instanceof HistoryQueryError) throw new ServiceError(error.status, error.code, error.message); throw error; }
         }
         if (route === 'work' && method === 'POST') { const input = await body(request), authorized = currentActor(request, actor); scoped(authorized, id); return json(workCommand(id, input, authorized!, request.headers.get('Idempotency-Key') ?? '', requestId)); }
         if (route === 'why' && method === 'GET') { const subject = url.searchParams.get('subject') ?? ''; if (!subject || subject.length > 160) throw new ServiceError(400, 'subject_required'); return json({ ...whyTimeline(world, subject), denied: store.queryEvents(id, { order: 'asc', limit: 50, scope: 'errors', q: subject }).data.filter((event: any) => event.type === 'work.denied') }); }
-        if (route === 'work/score' && method === 'GET') { requireController(actor); return json(scoreCashApplication(world)); }
+        if (route === 'work/score' && method === 'GET') { requireController(actor); return json(scoreSeat(world)); }
         if (route === 'work/status' && method === 'GET') return json(seatStatus(id));
         if (route === 'work/slack' && method === 'GET') { requireController(actor); return json({ available: Boolean(slack), ...(slack ? { status: slack.status(), binding: store.get('slack-bindings', id) ?? { enabled: false } } : { reason: slackSetup.reason }) }); }
         if (route === 'work/slack' && method === 'POST') {

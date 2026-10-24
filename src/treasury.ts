@@ -35,7 +35,7 @@ function controller(actor:Actor,h:TreasuryHooks){if(actor.role!=='controller')h.
 function fields(action:Action,allowed:string[],h:TreasuryHooks){if(Object.keys(action).some(key=>!['type','action',...allowed].includes(key))||(action.type&&action.action&&action.type!==action.action))h.fail('invalid_treasury_field','Unsupported treasury action field');}
 export function normalizeTreasury(w:World){
   for(const collection of Object.values(treasuryCollections))w[collection]??=[];
-  if(!w.bankAccounts.some((account:any)=>account.id==='cash-bank'))w.bankAccounts.unshift({id:'cash-bank',name:'Operating',currency:'USD',gl_account_id:'cash-bank',status:'active',verified_route_id:'synthetic-internal-cash-bank',external_account_id:'legacy-operating',created_at:w.bankTransactions.find(row=>row.id==='bank-opening')?.posted_at??w.now,historical_cost_minor:0,legacy:true});
+  if(!w.bankAccounts.some((account:any)=>account.id==='cash-bank'))w.bankAccounts.unshift({id:'cash-bank',name:'Operating',currency:w.currency??'USD',gl_account_id:'cash-bank',status:'active',verified_route_id:'synthetic-internal-cash-bank',external_account_id:'legacy-operating',created_at:w.bankTransactions.find(row=>row.id==='bank-opening')?.posted_at??w.now,historical_cost_minor:0,legacy:true});
   for(const [id,name,type] of treasuryAccounts)if(!w.accounts.some(account=>account.id===id))w.accounts.push({id,name,type,currency:'USD',balance_minor:0});
 }
 function account(w:World,id:string){const row=w.bankAccounts?.find((candidate:any)=>candidate.id===id);if(!row)throw new MoneyError('treasury_account_missing','Unknown treasury bank account');return row;}

@@ -1,14 +1,34 @@
 # gram
 
-**gram is the cash-application accountant at Kestrel Brewing.** It applies every incoming customer payment to the invoices it pays. It books a short-pay only under a policy it learned from the company's own records, and when it is not sure it asks the AR lead, in Slack or in the console. People approve, a gateway posts, and every step goes into an append-only log that can answer "why?" months later.
+**gram fills one finance seat at a real company: Live Nation Australasia's Tour Settlements Officer.** The seat is the company's own posting, [JR-93271](https://livenation.wd503.myworkdayjobs.com/en-US/LNExternalSite/job/Tour-Settlements-Officer_JR-93271): correct GL coding and cash receipting of venue settlements, invoice approvals checked against approval limits, documents in the tour folder, journals loaded to the ledger. The accounting it follows is Live Nation's own 2025 Form 10-K: concert revenue is recognized on the day of the event, money received before the event is deferred revenue, box office collected for others is never revenue, and an advance netted on a settlement is recoupment, not a short payment. Each venue deposit and each tour invoice becomes a work item. The seat allocates, codes and checks under policies it learned from last season's records, asks the Tour Accountant when the sources disagree, and never approves, posts or moves money itself. People approve, a gateway posts, and every step goes into an append-only log that can answer "why?" months later.
 
-**The seat in one line:** gram fills Kestrel Brewing's cash-application seat, the accountant who applies customer payments, and chases the short-pays it cannot justify.
+**The seat in one line:** gram fills Live Nation Australasia's Tour Settlements Officer seat, the assistant accountant who settles each show from the venue's deposit and keeps tour invoices inside their approval limits.
+
+What is real and what is simulated is stated in [`docs/live-nation-sources.md`](docs/live-nation-sources.md). The postings, the 10-K recognition rules, the balance-sheet and free-cash figures and the Ticketmaster refund terms are real and quoted there. Venues, deal terms, settlement sheets, deposits, approval-limit amounts, the chart of accounts and the past season are fixtures, labeled `simulated` in the data and the console; no planted mistake is presented as something a real venue did. gram also keeps its first seat, cash application at a synthetic brewery, as the second company (see [The cash-application seat](#the-cash-application-seat)). Both run on one system of work.
+
+## The Live Nation seat
+
+| JR-93271 says | What gram does | Code |
+|---|---|---|
+| "Ensure correct GL coding and cash receipting of venue settlements" | Each venue deposit becomes a work item. The seat allocates it to the show settlements it pays, codes every statement line (venue hire, merchant fee, music licence, catering, advance recoupment, FX) to the ledger, and the gateway posts one journal per settlement. | `src/tour-settlements.ts` `normalizeTourResolution`, `postTour` |
+| "Check invoice operational approvals are compliant with approval limits before approving" | Each tour invoice becomes a work item. Approval is a hard check in code: the approver's limit and category must cover it, its document must be in the tour folder, and it must not duplicate another invoice. Otherwise it is routed, held or rejected, and a person decides. | `approval_limit_exceeded`, `document_missing`, `possible_duplicate` |
+| "Over 97% of Concerts' revenue … is recognized on the day of the related event" (10-K) | Ticket money sits in deferred revenue from the sale. The gateway recognizes it only for a show that performed; a postponed show's deposit is allocated and its revenue stays deferred, enforced in code. | `recognition_before_performance` |
+| "Recoupable ticketing contract advances … recoupable against future royalties" (10-K) | The Melbourne partner's contract advance is a liability until recouped. A recoupment line on its settlement reduces that liability; it is never a shortfall and never an expense. | `advance_recoupment` |
+| "Must be able to read and interpret ticket audits" (JR-93290) | The ticket audit is the gross. A statement below it is coded as stated and the difference is chased from the venue, never written off. | `gross_below_ticket_audit` |
+| "Prepare APRA/PPCA submissions for sign off" | The music licence line is computed from a controller-set parameter that cites its source; the rate itself is unverified and stays a parameter until a person confirms it. | `tourParameters.music_licence_bps` |
+| "Working closely with Tour Accountants and Promoters … across Australia and New Zealand" | Books in AUD. The Auckland show settles in NZD at a fixture rate; the FX difference against the bank's rate is a coded line. | `fx_difference` |
+
+The planted month is one autumn arena tour of seven shows and ten records with an answer key: a two-night Melbourne deposit, a Sydney settlement as stated, a Brisbane merchant fee above the contract cap, an Auckland NZD settlement, a Perth statement below the ticket audit, an Adelaide remittance for a postponed show, and four invoices: one over its approver's limit, one compliant, one duplicate, one with no document filed. Four should post without a person; six must not. The simulated Tour Accountant answers from the key.
+
+The seat learns its policies from a simulated prior season of about forty settlements and sixty invoices, through read-only SQL: deposit equals statement net, two-night deposits split, venue aliases, merchant fee bound, music licence rate, advance recoupment, FX tolerance, recognition on performance, invoices within limit, catering bound. Every rule is backtested against that season before the controller sees it.
+
+Try it: **New company → Tour settlements (Live Nation Australasia)**, connect bank, NetSuite (standing in for Oracle) and Gmail, switch **On duty**, approve the onboarding policies under **Policies**, then **Advance to the next sync** through the month. **Why?** on `SH-3007` shows the postponed show's deposit allocated and its revenue left deferred. A judge's own deposit or invoice is recorded through `record_venue_deposit` or `record_tour_invoice` and scored with `record_case_expectation`, or with `bun run bench:cash --kind=tour-settlements --judge-case=cases.json`.
 
 ![The Work view: the seat, its status, and what waits on a person](docs/gram-work.png)
 
-## The seat
+## The cash-application seat
 
-Kestrel Brewing is a regional brewery. It sells kegs and cases to bars, hotels, a stadium, grocery chains and two distributors, and they pay by ACH, wire and lockbox check. Its receivables corner is messy in the ordinary ways:
+gram's first seat, kept as the second company. Kestrel Brewing is a synthetic regional brewery, built to the brief's allowance for an invented company; nothing in it refers to a real business. It sells kegs and cases to bars, hotels, a stadium, grocery chains and two distributors, and they pay by ACH, wire and lockbox check. Its receivables corner is messy in the ordinary ways:
 
 - **Wires and memos.** Wires arrive short by intermediary bank fees, and one wire can pay several invoices.
 - **Payers.** A parent company pays for its three bars.

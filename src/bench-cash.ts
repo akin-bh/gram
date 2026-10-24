@@ -20,6 +20,7 @@ import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {startServer} from './server.ts';
 import {agentQueue} from './work.ts';
+import {domainByKind,seatKinds} from './domains.ts';
 import type {SeatRunConfiguration} from './seat.ts';
 import type {RunResult} from './agent.ts';
 
@@ -31,9 +32,10 @@ export const ABLATIONS:Record<Ablation,string>={
 };
 const argv=process.argv.slice(2),args=new Set(argv),flag=(name:string)=>argv.find(arg=>arg.startsWith(`--${name}=`))?.slice(name.length+3);
 const scripted=args.has('--scripted'),onboardingOnly=args.has('--onboarding-only'),keep=args.has('--keep'),seed=Number(flag('seed')??42),trials=Math.max(1,Math.floor(Number(flag('trials')??1))||1);
-const ablate=flag('ablate') as Ablation|undefined,through=flag('through'),judgeCasePath=flag('judge-case');
+const ablate=flag('ablate') as Ablation|undefined,through=flag('through'),judgeCasePath=flag('judge-case'),kind=flag('kind')??'cash-application';
 if(ablate!==undefined&&!(ablate in ABLATIONS)){console.error(`Unknown --ablate value. Use one of: ${Object.keys(ABLATIONS).join(', ')}`);process.exit(2);}
-const DAYS=['2026-10-27','2026-10-28','2026-10-29','2026-11-03','2026-11-05','2026-11-10','2026-11-17'];
+if(import.meta.main&&!domainByKind(kind)){console.error(`Unknown --kind. Seats: ${seatKinds().join(', ')}`);process.exit(2);}
+if(import.meta.main&&scripted&&kind!=='cash-application'){console.error('The scripted baseline exists for the cash-application seat only.');process.exit(2);}
 /** A judge's own scenario: a bank line to record and the answer key to score it against. The seat never sees the key. */
 export type JudgeCase={line:{bank_reference:string;amount_minor:number;channel:'ach'|'wire'|'check';payer_name:string;memo:string};expectation:{title?:string;expected:Record<string,unknown>;forbid?:Record<string,unknown>;auto:boolean;first_move?:'propose'|'ask';truth:string}};
 
@@ -57,16 +59,17 @@ async function scriptedSeat(config:SeatRunConfiguration):Promise<RunResult>{
   return {output:'baseline',usage:{},model:'scripted-baseline',models:[],cost_usd:0,turns:0,tool_calls:0,elapsed_ms:0};
 }
 
-export async function runBench(options:{scripted:boolean;seed:number;stopAfter?:'onboarding';keep?:boolean;ablate?:Ablation;through?:string;judgeCases?:JudgeCase[];log?:(line:string)=>void}){
+export async function runBench(options:{scripted:boolean;seed:number;kind?:string;stopAfter?:'onboarding';keep?:boolean;ablate?:Ablation;through?:string;judgeCases?:JudgeCase[];log?:(line:string)=>void}){
   const log=options.log??(line=>console.log(line)),folder=options.keep?resolve(import.meta.dir,'..','data'):mkdtempSync(join(tmpdir(),'gram-bench-'));
+  const seatKind=options.kind??'cash-application',domain=domainByKind(seatKind);if(!domain)throw new Error(`No seat domain for ${seatKind}`);
   if(options.keep)mkdirSync(folder,{recursive:true,mode:0o700});
   const database=join(folder,options.keep?`bench-${options.scripted?'baseline':'live'}-${Date.now()}.sqlite`:'bench.sqlite');
   const server=await startServer({database,port:0,deliveryIntervalMs:0,seatIntervalMs:0,slack:false,maxSeatRunsPerHour:100,...(options.scripted?{seatRunner:scriptedSeat,colleaguePhrase:async(_situation:string,_what:string,truth:string)=>({text:truth,phrased_by:'case-file' as const})}:{})});
   const base=server.baseUrl,home=await fetch(base),cookie=home.headers.get('set-cookie')!.split(';')[0]!;await home.text();
   const call=async(path:string,input?:any)=>{const response=await fetch(base+path,{method:input===undefined?'GET':'POST',headers:{Cookie:cookie,...(input===undefined?{}:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()})},...(input===undefined?{}:{body:JSON.stringify(input)})});const data:any=await response.json();if(!response.ok)throw new Error(`${path}: ${JSON.stringify(data)}`);return data;};
   try{
-    const id=(await call('/api/worlds',{kind:'cash-application',seed:options.seed,...(options.ablate==='no-history'?{cashControls:{history:false}}:{})})).world.id;
-    for(const system of ['bank','netsuite','gmail']){
+    const id=(await call('/api/worlds',{kind:seatKind,seed:options.seed,...(options.ablate==='no-history'?{cashControls:{history:false}}:{})})).world.id;
+    for(const system of domain.seatSystems){
       const started=await call(`/api/worlds/${id}/connect/${system}`,{}),url=new URL(started.authorization_url),params=new URLSearchParams(url.search);params.set('decision','allow');
       const allowed=await fetch(base+url.pathname,{method:'POST',headers:{Cookie:cookie,Origin:base,'Content-Type':'application/x-www-form-urlencoded'},body:params,redirect:'manual'});await allowed.text();
       await (await fetch(allowed.headers.get('location')!,{headers:{Cookie:cookie},redirect:'manual'})).text();
@@ -87,9 +90,9 @@ export async function runBench(options:{scripted:boolean;seed:number;stopAfter?:
       log(`  ${label}: stopped after 120 ticks with work still waiting`);
     };
     const status=server.seatStatus(id)!;
-    log(`gram cash-application bench · ${options.scripted?'scripted baseline':`live Claude seat (${status.model}, ${status.effort} effort)`} · seed ${options.seed}${options.ablate?` · ablation: ${ABLATIONS[options.ablate]}`:''}`);
+    log(`gram ${domain.label} bench · ${options.scripted?'scripted baseline':`live Claude seat (${status.model}, ${status.effort} effort)`} · seed ${options.seed}${options.ablate?` · ablation: ${ABLATIONS[options.ablate]}`:''}`);
     await settle('onboarding');
-    for(const day of options.stopAfter?[]:DAYS.filter(day=>!options.through||day<=options.through)){
+    for(const day of options.stopAfter?[]:domain.bench.days.filter(day=>!options.through||day<=options.through)){
       await call(`/api/worlds/${id}/actions`,{type:'advance_to',at:`${day}T13:00:00.000Z`});
       await settle(day);
       const summary=(await call(`/api/worlds/${id}`)).summary;
@@ -99,15 +102,15 @@ export async function runBench(options:{scripted:boolean;seed:number;stopAfter?:
       // The judge's lines arrive like any other: recorded, keyed server-side, picked up by the dispatcher, answered by the colleague from the judge's truth.
       // They all land in one sync, so the seat works them as a batch and the judge set is scored as a set, not one case at a time.
       for(const {line,expectation} of options.judgeCases){
-        await call(`/api/worlds/${id}/actions`,{type:'record_bank_receipt',...line,external_event_id:`judge:${line.bank_reference}`});
-        await call(`/api/worlds/${id}/actions`,{type:'record_case_expectation',bank_reference:line.bank_reference,...expectation});
+        await call(`/api/worlds/${id}/actions`,domain.bench.recordLine(line));
+        await call(`/api/worlds/${id}/actions`,domain.bench.recordExpectation(line,expectation));
         log(`  judge scenario ${line.bank_reference}: ${expectation.title??line.memo} (may post alone: ${expectation.auto})`);
       }
       await settle('judge scenarios');
     }
     const score=await call(`/api/worlds/${id}/work/score`),runs=server.store.all('runs').filter((run:any)=>run.world===id);
     const cost=runs.reduce((total:number,run:any)=>total+(run.cost_usd??0),0);
-    const report={generated_at:new Date().toISOString(),mode:options.scripted?'scripted-baseline':'live',seed:options.seed,ablation:options.ablate??null,through:options.through??null,judge_cases:(options.judgeCases??[]).map(entry=>({bank_reference:entry.line.bank_reference,title:entry.expectation.title??null,auto:entry.expectation.auto})),model:runs.find((run:any)=>run.model)?.model??null,seat:{model:status.model,effort:status.effort,models_seen:[...new Set(runs.flatMap((run:any)=>run.models??[]))]},
+    const report={generated_at:new Date().toISOString(),mode:options.scripted?'scripted-baseline':'live',kind:seatKind,seed:options.seed,ablation:options.ablate??null,through:options.through??null,judge_cases:(options.judgeCases??[]).map(entry=>({bank_reference:entry.line.bank_reference,title:entry.expectation.title??null,auto:entry.expectation.auto})),model:runs.find((run:any)=>run.model)?.model??null,seat:{model:status.model,effort:status.effort,models_seen:[...new Set(runs.flatMap((run:any)=>run.models??[]))]},
       runs:runs.map((run:any)=>({id:run.id,status:run.status,mode:run.seat?.mode,trigger:run.seat?.trigger,items:run.seat?.items,cost_usd:run.cost_usd??null,turns:run.turns??null,tool_calls:run.tool_calls??null,elapsed_ms:run.elapsed_ms??null,output:run.output?.slice(0,2000)??run.error??null})),cost_usd:cost,
       colleague_replies:server.store.events(id,0,100000).filter((event:any)=>event.type==='colleague.acted').reduce((counts:Record<string,number>,event:any)=>({...counts,[event.data.phrased_by]:(counts[event.data.phrased_by]??0)+1}),{}),
       dispatcher_escalations:server.store.world(id).workLog.filter((row:any)=>row.actor==='dispatcher'&&row.action==='escalate').map((row:any)=>row.subject),
@@ -134,11 +137,11 @@ if(import.meta.main){
   // One scenario or a whole evaluation set: the file holds a {line, expectation} object or an array of them.
   const loaded=judgeCasePath?await Bun.file(judgeCasePath).json():undefined,judgeCases:JudgeCase[]|undefined=loaded===undefined?undefined:Array.isArray(loaded)?loaded:[loaded];
   if(judgeCases&&(!judgeCases.length||judgeCases.some(entry=>!entry?.line?.bank_reference||!entry?.expectation?.truth||typeof entry.expectation.auto!=='boolean'))){console.error('--judge-case needs {line:{bank_reference,amount_minor,channel,payer_name,memo},expectation:{expected,auto,truth,...}} or an array of them');process.exit(2);}
-  const stem=`cash-bench-${scripted?'scripted-baseline':'live'}${ablate?`-ablate-${ablate}`:''}${onboardingOnly?'-onboarding':''}${judgeCases?`-judge${judgeCases.length>1?`-set${judgeCases.length}`:''}`:''}${through?`-through-${through}`:''}-seed${seed}`;
+  const stem=`${kind==='cash-application'?'cash':kind}-bench-${scripted?'scripted-baseline':'live'}${ablate?`-ablate-${ablate}`:''}${onboardingOnly?'-onboarding':''}${judgeCases?`-judge${judgeCases.length>1?`-set${judgeCases.length}`:''}`:''}${through?`-through-${through}`:''}-seed${seed}`;
   const reports:Awaited<ReturnType<typeof runBench>>[]=[];
   for(let trial=1;trial<=trials;trial++){
     if(trials>1)console.log(`\n=== trial ${trial} of ${trials} ===`);
-    const report=await runBench({scripted,seed,keep,...(ablate?{ablate}:{}),...(through?{through}:{}),...(judgeCases?{judgeCases}:{}),...(onboardingOnly?{stopAfter:'onboarding' as const}:{})});
+    const report=await runBench({scripted,seed,kind,keep,...(ablate?{ablate}:{}),...(through?{through}:{}),...(judgeCases?{judgeCases}:{}),...(onboardingOnly?{stopAfter:'onboarding' as const}:{})});
     reports.push(report);printReport(report);
     const file=join(out,`${stem}${trials>1?`-trial${trial}`:''}.json`);writeFileSync(file,JSON.stringify(report,null,2)+'\n');console.log(`\nreport: ${file}`);
   }

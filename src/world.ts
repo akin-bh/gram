@@ -39,8 +39,10 @@ import {manualJournalAction,manualJournalApprovalRejected,manualJournalCollectio
 import type {ManualJournalHooks} from './manual-journals.ts';
 import {erpIdentityRequirements,erpIdentityAction,syncErpIdentities} from './erp-identities.ts';
 import {supplierPaymentRequirements,supplierPaymentCollections,supplierPaymentFeeds,supplierPaymentAction,resolveSupplierPaymentRoute,validateSupplierPaymentBinding,supplierPaymentOperationRoute,holdSupplierPaymentRoute} from './supplier-payments.ts';
-import {CASH_KIND,cashApplicationAccounts,cashApplicationAction,cashApplicationRequirements,deliverBankFeed,normalizeCashApplication,seedCashApplication,validatedCashControls} from './cash-application.ts';
-import type {CashHooks,CashControls} from './cash-application.ts';
+import {CASH_KIND} from './cash-application.ts';
+import type {CashControls} from './cash-application.ts';
+import {allDomains,domainByKind,domainFor} from './domains.ts';
+import type {WorkHooks} from './seat-domain.ts';
 import {advanceWork,createWorkItem,normalizeWork,workAction,SYNC} from './work.ts';
 /** accountant and system actors exist only in the cash-application system of work. */
 export type Actor = { id: string; role: 'controller' | 'agent' | 'operator' | 'accountant' | 'system'; runId?: string };
@@ -76,6 +78,7 @@ const definitions: [string, string, string[]][] = [
 ];
 export const systemCatalog = definitions.map(([id,name,feeds]) => ({ id, name, feeds, category:feeds.includes('gl-account')?'Accounting':feeds.includes('bank-transaction')?'Banking':feeds.includes('bill')?'Spend':id==='gmail'?'Communication':feeds.includes('order')?'Ticketing':feeds.includes('invoice')?'Billing':feeds.includes('book-transaction')?'Payroll':feeds.includes('document')?'Documents':'Business context', implementation: 'shared-world-projection', vendor_api_compatible: false }));
 export const scenarioCatalog = [
+  {id:'tour-settlements',kind:'tour-settlements',name:'Tour settlements (Live Nation Australasia)',description:'The Tour Settlements Officer seat from Live Nation\'s real posting JR-93271, on the accounting in its 2025 Form 10-K: venue settlement deposits allocated to shows and coded to the ledger, revenue recognized only when a show performs, tour invoices checked against approval limits. Venues, amounts and people are simulated and labeled so; see docs/live-nation-sources.md.'},
   {id:'cash-application',kind:'cash-application',name:'Cash application',description:'Kestrel Brewing receivables: a year of imported receipts to learn from, then live bank lines that become work items. Short wires, split payments, a parent paying for its bars, returned keg deposits, early-payment discounts, unidentified and duplicate receipts, and a new deduction code.'},
   {id:'foreign-service-close',kind:'foreign-service-close',name:'Foreign services',description:'Completed-service foreign receivables and payables, source FX recognition, closing valuation and independently approved native-bank settlements.'},
   {id:'payroll-federal',kind:'payroll-federal',name:'Federal payroll',description:'Versioned 2026 US federal regular-wage withholding, Social Security caps, Medicare thresholds and FUTA with explicit W-4 and historical wage sources. Independent wage and deposit approvals; no state tax or return filing.'},
@@ -102,9 +105,9 @@ const chart = [
  * Bank transactions, journals and existing account balances never change here.
  */
 export function normalizeWorld(w:World):World {
-  normalizeProcurement(w);normalizePayroll(w);normalizeReconciliation(w);normalizeBankActivity(w);normalizeFixedAssets(w);normalizeTreasury(w);normalizeForeignObligations(w);normalizeCashApplication(w);normalizeWork(w);
+  normalizeProcurement(w);normalizePayroll(w);normalizeReconciliation(w);normalizeBankActivity(w);normalizeFixedAssets(w);normalizeTreasury(w);normalizeForeignObligations(w);domainByKind(w.kind)?.normalizeWorld?.(w);normalizeWork(w);
   for(const key of ['creditNotes','disputes','paymentReturns','externalEvents','settledUnposted'])if(w[key]===undefined)w[key]=[];
-  for(const [id,name,type] of [...chart,...(w.kind===CASH_KIND?cashApplicationAccounts:[])])if(!w.accounts.some(a=>a.id===id))w.accounts.push({id,name,type,currency:'USD',balance_minor:0});
+  for(const [id,name,type] of [...chart,...(domainByKind(w.kind)?.accounts??[])])if(!w.accounts.some(a=>a.id===id))w.accounts.push({id,name,type,currency:w.currency??'USD',balance_minor:0});
   const operations=new Map(w.operations.map(operation=>[operation.id,operation])),losses=new Map<string,number>(),discharged=new Map<string,number>();
   for(const dispute of w.disputes.filter((item:any)=>item.status==='lost')){
     losses.set(dispute.payment_id,(losses.get(dispute.payment_id)??0)+dispute.amount_minor);
@@ -116,7 +119,7 @@ export function normalizeWorld(w:World):World {
   return w;
 }
 export const actionRequirements:Record<string,{role:'controller'|'operator';system:string;external?:boolean;internal?:boolean;systems?:readonly string[]}>={
-  ...cashApplicationRequirements,...procurementRequirements,...payrollRequirements,...reconciliationRequirements,...bankActivityRequirements,...fixedAssetRequirements,...treasuryRequirements,...foreignObligationRequirements,...masterDataRequirements,...manualJournalRequirements,...erpIdentityRequirements,...supplierPaymentRequirements,...ticketingRequirements,
+  ...Object.assign({},...allDomains().map(domain=>domain.requirements)),...procurementRequirements,...payrollRequirements,...reconciliationRequirements,...bankActivityRequirements,...fixedAssetRequirements,...treasuryRequirements,...foreignObligationRequirements,...masterDataRequirements,...manualJournalRequirements,...erpIdentityRequirements,...supplierPaymentRequirements,...ticketingRequirements,
   request_bill_payment:{role:'operator',system:'mercury'},
   issue_credit_note:{role:'controller',system:'chargebee',external:true},
   open_dispute:{role:'controller',system:'stripe',external:true},
@@ -215,13 +218,13 @@ function cancelEvent(w: World, action: Action, events: DomainEvent[]) {
   emit(events,w,'ticketing.event_cancelled',{event_id:event.id,document_id:doc.id}); return {event,document:doc};
 }
 export function createWorld(input: ScenarioInput = {}, id = 'world-local'): World {
-  const kind = input.kind ?? 'ticket-cancellation';
+  const kind = input.kind ?? 'ticket-cancellation', seatDomain = domainByKind(kind);
   let blueprint:Blueprint|undefined;
   if(input.blueprint!==undefined){try{blueprint=validateBlueprint(input.blueprint);}catch(error){if(error instanceof BlueprintError)reject(error.code,error.message);throw error;}
     if(['exceptionControls','procurementControls','payrollControls','reconciliationControls','treasuryControls','foreignControls','cashControls'].some(key=>input[key as keyof ScenarioInput]!==undefined))reject('blueprint_preset_conflict','Blueprint source graphs cannot be combined with preset economic controls');
     if(input.initialCashMinor===undefined&&input.startingCashMinor===undefined)reject('blueprint_opening_capital_required','Blueprint worlds require explicit initialCashMinor or startingCashMinor, including zero');
     if(input.cancelEvent===true)reject('blueprint_preset_conflict','Preset ticket cancellation cannot be applied to a blueprint source graph');
-    if(kind===CASH_KIND)reject('blueprint_preset_conflict','The cash-application company has its own imported history; it cannot be combined with a blueprint');
+    if(seatDomain)reject('blueprint_preset_conflict','A seat company has its own imported history; it cannot be combined with a blueprint');
   }
   const defaultNames: Record<string, string> = {
     'ticket-cancellation':'Ticketing', 'saas-collections':'Collections', 'supplier-fraud':'Suppliers',
@@ -232,8 +235,9 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   if(input.foreignControls!==undefined&&kind!=='foreign-service-close')reject('invalid_scenario','foreignControls require foreign-service-close');
   if(input.treasuryControls!==undefined&&kind!=='treasury-fx')reject('invalid_scenario','treasuryControls require treasury-fx');
   if(input.cashControls!==undefined&&kind!==CASH_KIND)reject('invalid_scenario','cashControls require the cash-application family');
-  const cashControls=kind===CASH_KIND?validatedCashControls(input.cashControls,reject):undefined;
-  if(input.currency!==undefined&&input.currency!=='USD')reject('unsupported_currency','Only USD scenarios are implemented');
+  const seatControls=seatDomain?.validateControls?.(input.cashControls,reject);
+  const currency=input.currency??seatDomain?.defaults.currency??'USD';
+  if(currency!=='USD'&&currency!==seatDomain?.defaults.currency)reject('unsupported_currency','Only USD scenarios are implemented');
   if(input.cancelEvent!==undefined&&typeof input.cancelEvent!=='boolean')reject('invalid_scenario','cancelEvent must be boolean');
   if(input.exceptionControls!==undefined&&kind!=='settlement-exceptions')reject('invalid_scenario','exceptionControls require the settlement-exceptions family');
   const exceptionControls=kind==='settlement-exceptions'?validatedExceptionControls(input.exceptionControls):undefined;
@@ -244,24 +248,24 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   if(input.reconciliationControls!==undefined&&kind!=='bank-reconciliation')reject('invalid_scenario','reconciliationControls require the bank-reconciliation family');
   const reconciliationControls=kind==='bank-reconciliation'?validatedReconciliationControls(input.reconciliationControls):undefined;
   if(input.initialCashMinor!==undefined&&input.startingCashMinor!==undefined&&input.initialCashMinor!==input.startingCashMinor)reject('conflicting_cash','initialCashMinor and startingCashMinor disagree');
-  const count = integer(input.orderCount ?? (kind===CASH_KIND?14:['procurement-matching','bank-reconciliation'].includes(kind)?4:['payroll-close','payroll-federal','fixed-asset-close','foreign-service-close'].includes(kind)?3:24),'orderCount',1,kind===CASH_KIND?60:kind==='foreign-service-close'?50:['procurement-matching','bank-reconciliation','fixed-asset-close'].includes(kind)?200:['payroll-close','payroll-federal'].includes(kind)?100:2000);
+  const count = integer(input.orderCount ?? (seatDomain?seatDomain.defaults.count:['procurement-matching','bank-reconciliation'].includes(kind)?4:['payroll-close','payroll-federal','fixed-asset-close','foreign-service-close'].includes(kind)?3:24),'orderCount',1,seatDomain?seatDomain.defaults.maxCount:kind==='foreign-service-close'?50:['procurement-matching','bank-reconciliation','fixed-asset-close'].includes(kind)?200:['payroll-close','payroll-federal'].includes(kind)?100:2000);
   const seed = input.seed ?? 42;
   if((typeof seed!=='string'&&typeof seed!=='number')||(typeof seed==='string'&&seed.length>200)||(typeof seed==='number'&&!Number.isSafeInteger(seed)))reject('invalid_seed','seed must be a bounded string or safe integer');
   let randomState = 2166136261;
   for (const char of String(seed)) randomState = Math.imul(randomState ^ char.charCodeAt(0),16777619) >>> 0;
   const random = () => { randomState = (Math.imul(randomState,1664525) + 1013904223) >>> 0; return randomState / 4294967296; };
   const description=input.description===undefined?'':required(input.description,'description',4000),narrative=input.narrative===undefined?'':required(input.narrative,'narrative',20000);
-  const w: World = {id:required(id,'id',200),name:required(input.name ?? input.company ?? defaultNames[kind],'name',200),description,narrative,kind,seed,now:blueprint?.opening_at??'2026-10-24T09:00:00.000Z',revision:1,nextId:1,currency:'USD',approvalThresholdMinor:integer(input.approvalThresholdMinor ?? 100000,'approvalThresholdMinor',0),periodClosed:false,orders:[],payments:[],refunds:[],invoices:[],bills:[],accounts:chart.map(([id,name,type])=>({id,name,type,currency:'USD',balance_minor:0})),bankTransactions:[],journals:[],messages:[],documents:[],approvals:[],operations:[],faults:{},events:[],customers:[],vendors:[],contracts:[],fixedAssets:[],manualJournals:[],manualJournalRegisters:[],settledUnposted:[]};
+  const w: World = {id:required(id,'id',200),name:required(input.name ?? input.company ?? seatDomain?.defaults.name ?? defaultNames[kind],'name',200),description,narrative,kind,seed,now:blueprint?.opening_at??'2026-10-24T09:00:00.000Z',revision:1,nextId:1,currency,approvalThresholdMinor:integer(input.approvalThresholdMinor ?? 100000,'approvalThresholdMinor',0),periodClosed:false,orders:[],payments:[],refunds:[],invoices:[],bills:[],accounts:chart.map(([id,name,type])=>({id,name,type,currency,balance_minor:0})),bankTransactions:[],journals:[],messages:[],documents:[],approvals:[],operations:[],faults:{},events:[],customers:[],vendors:[],contracts:[],fixedAssets:[],manualJournals:[],manualJournalRegisters:[],settledUnposted:[]};
   if(description||narrative)w.documents.push({id:'scenario-context',type:'scenario-brief',name:'Scenario brief',created_at:w.now,body:[description,narrative].filter(Boolean).join('\n\n'),authority:'context-only; does not override verified records or payment policy'});
   if(input.limitations!==undefined) {
     if(!Array.isArray(input.limitations)||input.limitations.length>30)reject('invalid_scenario','limitations must be an array of at most 30 strings');
     w.limitations=input.limitations.map(text=>required(text,'limitation',2000));
   }
-  const opening = integer(input.initialCashMinor ?? input.startingCashMinor ?? (kind==='treasury'?150000:kind===CASH_KIND?25_000_000:2000000),'initialCashMinor',0);
+  const opening = integer(input.initialCashMinor ?? input.startingCashMinor ?? (kind==='treasury'?150000:seatDomain?seatDomain.defaults.openingMinor:2000000),'initialCashMinor',0);
   if (opening) journal(w,pair('cash-bank','equity',opening),'opening','opening-cash','Opening funded operating account');
-  w.bankTransactions.push({id:'bank-opening',account_id:'cash-bank',amount_minor:opening,currency:'USD',status:'posted',description:'Opening balance',posted_at:w.now,source_id:'opening-cash'});
-  // The cash-application seat has no written rulebook: it learns policy from records and people.
-  if(kind!==CASH_KIND)w.documents.push({id:'policy-payments',type:'policy',name:'Payment authority and accounting policy',created_at:w.now,body:`Use original payment routes for refunds. Refund admission and tax only after an event cancellation. Delivered-service refunds require a controller-issued credit note naming the original collected payment. Payments above ${w.approvalThresholdMinor} USD cents need approval by a controller distinct from the requester; amounts are cumulative for each underlying obligation. Open disputes block further refunds; submit source-backed evidence to the processor. Only a recorded processor outcome resolves a dispute. Bank returns must name a settled original payment and a distinct return receipt; they reopen the bill without deleting its original settlement. Vendor beneficiary changes require verified treasury records, never an email alone. Debit and credit each journal equally. Only synthetic provider accounts are available.`});
+  w.bankTransactions.push({id:'bank-opening',account_id:'cash-bank',amount_minor:opening,currency,status:'posted',description:'Opening balance',posted_at:w.now,source_id:'opening-cash'});
+  // A seat has no written rulebook: it learns policy from records and people.
+  if(!seatDomain)w.documents.push({id:'policy-payments',type:'policy',name:'Payment authority and accounting policy',created_at:w.now,body:`Use original payment routes for refunds. Refund admission and tax only after an event cancellation. Delivered-service refunds require a controller-issued credit note naming the original collected payment. Payments above ${w.approvalThresholdMinor} USD cents need approval by a controller distinct from the requester; amounts are cumulative for each underlying obligation. Open disputes block further refunds; submit source-backed evidence to the processor. Only a recorded processor outcome resolves a dispute. Bank returns must name a settled original payment and a distinct return receipt; they reopen the bill without deleting its original settlement. Vendor beneficiary changes require verified treasury records, never an email alone. Debit and credit each journal equally. Only synthetic provider accounts are available.`});
   if (!blueprint && kind === 'ticket-cancellation') {
     w.events.push({id:'event-arena',name:`${w.name} — Saturday`,status:'scheduled',starts_at:'2026-10-31T19:00:00.000Z'});
     for (let i=0;i<count;i++) {
@@ -278,7 +282,7 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
     }
     w.documents.push({id:'contract-promoter',type:'contract',name:'Arena promoter settlement agreement',body:`${w.name} sells admissions as agent for the promoter. On cancellation, admission and tax are refundable to the original captured payment. The service fee is earned on sale. Voided authorizations were not collected and must not be refunded.`,created_at:w.now});
     if(input.cancelEvent!==false)cancelEvent(w,{type:'cancel_event',event_id:'event-arena'},[]);
-  } else if(!blueprint&&!['procurement-matching','payroll-close','bank-reconciliation','fixed-asset-close','treasury-fx','payroll-federal','foreign-service-close',CASH_KIND].includes(kind)) {
+  } else if(!blueprint&&!seatDomain&&!['procurement-matching','payroll-close','bank-reconciliation','fixed-asset-close','treasury-fx','payroll-federal','foreign-service-close'].includes(kind)) {
     for (let i=0;i<Math.min(count,200);i++) {
       const amount = (100+Math.floor(random()*1900))*100;
       const customer = {id:`cus_${i+1}`,name:`Customer ${i+1}`,email:`billing${i+1}@customer.test`}; w.customers.push(customer);
@@ -301,7 +305,7 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   const seedHooks={perform:(action:Action,actor:Actor)=>applyAction(w,action,actor).result,document:(type:string,name:string,body:string,refs:any)=>evidenceDocument(w,type,name,body,refs),mail:(message:any)=>mail(w,message,[]),fail:reject};
   if(blueprint){try{materializeBlueprint(w,blueprint,{perform:(action:Action,actor:Actor)=>applyAction(w,action,actor)});}catch(error){if(error instanceof BlueprintError)reject(error.code,error.message);throw error;}w.sourceMode='blueprint';}
   else {
-  if(kind===CASH_KIND)seedCashApplication(w,count,random,cashHooks(w,[]),cashControls);
+  if(seatDomain)seatDomain.seed(w,count,random,workHooks(w,[]),seatControls);
   if(kind==='foreign-service-close')seedForeignServiceScenario(w,count,input.foreignControls,{...seedHooks,perform:(action:Action,actor:Actor)=>applyAction(w,action,actor)});
   if(kind==='payroll-federal')seedStatutoryPayrollScenario(w,count,seedHooks);
   if(kind==='fixed-asset-close')seedFixedAssetScenario(w,count,random,seedHooks);
@@ -360,8 +364,9 @@ function seedReconciliationHistory(w:World,controls:Required<ReconciliationContr
   mail(w,{from:'controller@simulation.test',subject:'Reconcile statement sources and historical posting dates',body:doc.body,source_refs:[doc.id,statement.id,statement.document_id]},[]);
 }
 
-function cashHooks(w:World,events:DomainEvent[]):CashHooks {
-  const hooks:CashHooks={...procurementHooks(w,events),effect:(type,targetId,amount,lines,externalId,bankDelta)=>economicEvent(w,type,targetId,amount,lines,externalId,bankDelta,events),post:(lines,sourceType,sourceId,description)=>journal(w,lines,sourceType,sourceId,description),createWork:item=>createWorkItem(w,{...item,reason:'New bank line'},SYNC,hooks)};
+/** What a seat's domain may do to the world: effects, journals, mail, documents and new work items. */
+function workHooks(w:World,events:DomainEvent[]):WorkHooks {
+  const hooks:WorkHooks={...procurementHooks(w,events),effect:(type,targetId,amount,lines,externalId,bankDelta)=>economicEvent(w,type,targetId,amount,lines,externalId,bankDelta,events),post:(lines,sourceType,sourceId,description)=>journal(w,lines,sourceType,sourceId,description),createWork:item=>createWorkItem(w,{...item,reason:item.reason??'New record'},SYNC,hooks)};
   return hooks;
 }
 function ticketingHooks(w:World,events:DomainEvent[]):TicketingHooks {
@@ -548,17 +553,17 @@ function refundReserved(w:World,paymentId:string,noteId?:string){return w.refund
 function creditRemaining(note:any){return note.amount_minor-note.amount_refunded_minor-note.amount_disputed_minor;}
 function noteStatus(note:any){note.status=creditRemaining(note)>0?'issued':note.amount_disputed_minor?'satisfied':'refunded';}
 function economicEvent(w:World,type:string,targetId:string,amount:number,lines:any[],externalId:string,bankDelta:number,events:DomainEvent[],cashAccount:'cash-bank'|'cash-processor'='cash-bank'){
-  const operation:any={id:uid(w,'op'),type,target_id:targetId,amount_minor:amount,currency:'USD',status:'settled',created_at:w.now,settled_at:w.now,receipt_id:uid(w,'receipt'),external_event_id:externalId,cash_effect_minor:cashAccount==='cash-bank'?bankDelta:0,...(cashAccount==='cash-processor'?{cash_account_id:cashAccount,processor_cash_effect_minor:bankDelta}:{}),journal_lines:lines};
+  const operation:any={id:uid(w,'op'),type,target_id:targetId,amount_minor:amount,currency:w.currency??'USD',status:'settled',created_at:w.now,settled_at:w.now,receipt_id:uid(w,'receipt'),external_event_id:externalId,cash_effect_minor:cashAccount==='cash-bank'?bankDelta:0,...(cashAccount==='cash-processor'?{cash_account_id:cashAccount,processor_cash_effect_minor:bankDelta}:{}),journal_lines:lines};
   w.operations.push(operation);
   if(bankDelta&&cashAccount==='cash-processor'){const movement=recordProcessorMovement(w,{type:type==='dispute_opened'?'dispute_hold':'dispute_release',source_id:targetId,dispute_id:targetId,operation_id:operation.id,amount_minor:bankDelta,receipt_id:operation.receipt_id},ticketingHooks(w,events));operation.processor_transaction_id=movement.id;}
-  else if(bankDelta)w.bankTransactions.push({id:uid(w,'banktx'),account_id:'cash-bank',amount_minor:bankDelta,currency:'USD',status:'posted',description:type,posted_at:w.now,source_id:operation.id,receipt_id:operation.receipt_id,external_event_id:externalId});
+  else if(bankDelta)w.bankTransactions.push({id:uid(w,'banktx'),account_id:'cash-bank',amount_minor:bankDelta,currency:w.currency??'USD',status:'posted',description:type,posted_at:w.now,source_id:operation.id,receipt_id:operation.receipt_id,external_event_id:externalId});
   postSettlement(w,operation,events);emit(events,w,'operation.settled',{operation_id:operation.id,receipt_id:operation.receipt_id,amount_minor:amount,cash_effect_minor:operation.cash_effect_minor,...(cashAccount==='cash-processor'?{processor_cash_effect_minor:operation.processor_cash_effect_minor}:{})});return operation;
 }
 function evidenceDocument(w:World,type:string,name:string,body:string,refs:any){const document={id:uid(w,'doc'),type,name,body,created_at:w.now,...refs};w.documents.push(document);return document;}
 const canonical=(value:any):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
 function saveExternal(w:World,action:Action,result:any){w.externalEvents.push({id:action.external_event_id,type:action.type??action.action,fingerprint:canonical(action),received_at:w.now,result:clone(result)});return result;}
 function advance(w: World, events: DomainEvent[]) {
-  if(w.kind===CASH_KIND){const hooks=cashHooks(w,events);deliverBankFeed(w,hooks);advanceWork(w,hooks);}
+  if(w.seat){const hooks=workHooks(w,events);domainFor(w).deliver(w,hooks);advanceWork(w,hooks);}
   const foreign=advanceForeignObligations(w,foreignHooks(w,events)),payroll=advancePayroll(w,payrollHooks(w,events)),treasury=advanceTreasury(w,treasuryHooks(w,events)),settled:string[]=[...foreign.settled,...payroll.settled,...treasury.settled],blocked:any[]=[...foreign.blocked,...payroll.blocked,...treasury.blocked];
   for (const operation of w.operations.filter(o=>o.status==='pending'&&o.settles_at<=w.now&&!payrollPaymentTypes.includes(o.type)&&!treasuryPaymentTypes.includes(o.type)&&!foreignPaymentTypes.includes(o.type))) {
     const processorFunded=operation.type==='refund'&&operation.cash_account_id==='cash-processor';
@@ -629,9 +634,14 @@ function mutate(w: World, action: Action, actor: Actor, events: DomainEvent[], a
     const previous=w.externalEvents.find((event:any)=>event.id===action.external_event_id);
     if(previous){if(previous.fingerprint!==canonical(action))reject('external_event_conflict','External event ID was already used for different facts',409);return {...clone(previous.result),replayed:true};}
   }
-  const cash=cashApplicationAction(w,action,actor,cashHooks(w,events));
-  if(cash.handled)return saveExternal(w,action,cash.result);
-  const work=workAction(w,action,actor,cashHooks(w,events));
+  // Controller facts that belong to a seat's records go to that seat's domain; a fact for another seat's company is refused.
+  const owning=allDomains().find(domain=>domain.kind===w.kind&&type!==undefined&&domain.requirements[type])??allDomains().find(domain=>type!==undefined&&domain.requirements[type]);
+  if(owning){
+    if(w.kind!==owning.kind)reject('unsupported_scenario_action',`${type} belongs to the ${owning.label} seat`,409);
+    const result=owning.action(w,action,actor,workHooks(w,events));
+    if(result.handled)return saveExternal(w,action,result.result);
+  }
+  const work=workAction(w,action,actor,workHooks(w,events));
   if(work.handled)return work.result;
   const erp=erpIdentityAction(w,action,actor,{id:prefix=>uid(w,prefix),fail:reject,emit:(type,data)=>emit(events,w,type,data)});
   if(erp.handled)return saveExternal(w,action,erp.result);
@@ -847,7 +857,7 @@ function mutate(w: World, action: Action, actor: Actor, events: DomainEvent[], a
     if(!['offline','rate_limit','expired','healthy'].includes(action.mode))reject('invalid_fault','Unsupported connection fault');
     w.faults[action.system]={mode:action.mode,since:w.now};emit(events,w,'connection.changed',{system:action.system,mode:action.mode});
     // Approved work blocked by an outage posts as soon as the ledger is reachable again.
-    if(w.seat&&action.mode==='healthy')advanceWork(w,cashHooks(w,events));
+    if(w.seat&&action.mode==='healthy')advanceWork(w,workHooks(w,events));
     return w.faults[action.system];
   }
   if(type==='close_period'||type==='reopen_period') {controller(actor);w.periodClosed=type==='close_period';emit(events,w,'accounting.period_changed',{closed:w.periodClosed});return {periodClosed:w.periodClosed,...(w.periodClosed?{}:advance(w,events))};}
@@ -945,9 +955,9 @@ export function summarize(w: World) {
     ...(w.foreignControls?{foreignControls:clone(w.foreignControls),foreignSources:clone(w.foreignSources)}:{}),
     ...(w.treasuryControls?{treasuryControls:clone(w.treasuryControls),treasurySources:clone(w.treasurySources)}:{}),
     ...(w.reconciliationControls?{reconciliationControls:clone(w.reconciliationControls)}:{}),
-    ...(w.seat?{seat:{title:w.seat.title,one_line:w.seat.one_line,autonomy:clone(w.seat.autonomy),ablation:clone(w.seat.ablation??{trust_agent_confidence:false,skip_backtest:false}),onboarding:clone(w.seat.onboarding),history_imported:(w.cashHistory?.receipts?.length??0)>0,judge_cases:(w.cashCaseKey??[]).filter((row:any)=>row.set==='judge').length},
+    ...(w.seat?{seat:{kind:w.kind,title:w.seat.title,one_line:w.seat.one_line,autonomy:clone(w.seat.autonomy),ablation:clone(w.seat.ablation??{trust_agent_confidence:false,skip_backtest:false}),onboarding:clone(w.seat.onboarding),history_imported:domainFor(w).historySummary(w).records>0,judge_cases:domainFor(w).answerKey(w).filter((row:any)=>row.set==='judge').length},
       work:Object.fromEntries(['new','proposed','needs_info','answered','rejected','approved','posted','escalated','scheduled','closed'].map(state=>[state,w.workItems.filter((item:any)=>item.state===state).length])),
-      unapplied_cash_minor:0-lookup(w.accounts,'unapplied-cash','Account').balance_minor,bank_feed_pending:w.bankFeed.filter((row:any)=>!row.delivered_at).length,
+      ...domainFor(w).summary(w),
       policies_active:w.policies.filter((row:any)=>row.status==='active').length,policies_proposed:w.policies.filter((row:any)=>row.status==='proposed').length,open_questions:w.questions.filter((row:any)=>row.status==='open').length}:{}),
     unclassified_bank_activities:w.bankActivities.filter((activity:any)=>activity.status!=='classified').length,
     open_bank_statements:w.bankStatements.filter((statement:any)=>['open','prepared'].includes(statement.status)).length,closed_bank_statements:w.bankStatements.filter((statement:any)=>statement.status==='closed').length,

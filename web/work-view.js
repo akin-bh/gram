@@ -18,6 +18,7 @@ function boundText(backtest, ctx) {
 function proposalLines(proposal, money) {
   if (!proposal) return [];
   if (proposal.kind === 'reminder') return ['Send reminder: ' + proposal.reminder];
+  if (Array.isArray(proposal.lines)) return proposal.lines;
   const r = proposal.resolution || {};
   return [
     ...(r.allocations || []).map(row => 'Apply ' + money(row.amount_minor) + ' to ' + row.invoice_id),
@@ -66,7 +67,7 @@ export function renderWork(content, ctx) {
     status.missing_connections?.length ? 'Needs connections: ' + status.missing_connections.join(', ') : '',
     !status.agent_available ? 'Claude is not configured' : status.model ? 'Model: ' + status.model + (status.effort ? ' at ' + status.effort + ' effort' : '') : '',
     status.stalled_items?.length ? 'Stalled: ' + status.stalled_items.join(', ') : '',
-    seat.onboarding.status === 'pending' ? 'Onboarding: will learn from ' + (w.cash_history_counts?.receipts ?? 0) + ' historical receipts first' : 'Onboarded ' + when(seat.onboarding.completed_at),
+    seat.onboarding.status === 'pending' ? 'Onboarding: will learn from ' + (w.history_counts?.records ?? w.cash_history_counts?.receipts ?? 0) + ' historical records first' : 'Onboarded ' + when(seat.onboarding.completed_at),
   ].filter(Boolean).join(' · '));
   if (status.missing_connections?.length) card.buttons([['Connect ' + status.missing_connections.join(', '), () => ctx.connect(status.missing_connections)]]);
   card.buttons([['Run a shift now', () => ctx.startShift(), Boolean(status.running_run) || !status.agent_available]]);
@@ -138,7 +139,9 @@ export function renderWork(content, ctx) {
   const pending = (w.bankFeed || []).filter(row => !row.delivered_at);
   feed.text('Next sync', pending.length ? pending.length + ' lines scheduled · next ' + when(pending[0].arrives_at) : 'No scheduled lines');
   if (pending.length) feed.buttons([['Advance to the next sync', () => ctx.act(pending[0].arrives_at > w.now ? { type: 'advance_to', at: pending[0].arrives_at } : { type: 'advance_time', hours: 1 })]]);
-  const line = ctx.draft('bank-line', { payer: '', amount: '', memo: '', channel: 'ach' }), form = feed.folder('Record a bank line', { open: false });
+  if (w.kind !== 'cash-application') feed.text('Your own scenario', 'Record a line for this seat with its answer key through the API (record_case_expectation) or `bun run bench:cash --kind=' + w.kind + ' --judge-case=cases.json`; it is scored as the judge set.').host.classList.add('prose');
+  const line = ctx.draft('bank-line', { payer: '', amount: '', memo: '', channel: 'ach' }), form = w.kind === 'cash-application' ? feed.folder('Record a bank line', { open: false }) : null;
+  if (form) {
   form.text('Payer name', line.payer, value => line.payer = value, 'As the bank shows it, or blank');
   form.text('Amount (USD)', line.amount, value => line.amount = value, '57975.00');
   form.text('Memo', line.memo, value => line.memo = value, 'WIRE IN … INV 2003');
@@ -178,6 +181,7 @@ export function renderWork(content, ctx) {
     Object.assign(line, { payer: '', amount: '', memo: '' });
     Object.assign(key, { invoice: '', amount: '', adjustKind: '', adjustAmount: '', hold: false, chase: '', forbid: '', auto: false, truth: '' });
   }]]);
+  }
 
   const scorePane = content.folder('Score against the answer keys' + (s.seat?.judge_cases ? ' · ' + s.seat.judge_cases + ' judge scenario' + (s.seat.judge_cases === 1 ? '' : 's') : ''), { root: true, wide: true }), scored = scoreResults.get(ctx.worldId() + ':' + ctx.world().revision);
   scorePane.text('What it measures', 'Precision of automation is what posted without a person and matched the key. Should-not-act counts proposals the key forbids and lines that posted alone when a person was required. Lines you record with an answer key are scored separately as judge scenarios the seat has never seen.').host.classList.add('prose');
@@ -209,10 +213,9 @@ export function renderWorkItem(content, ctx, itemId) {
   }
   if (cached.loading) { content.folder(itemId, { root: true, wide: true }).text('Status', 'Loading…'); return; }
   if (cached.error) { content.folder(itemId, { root: true, wide: true }).text('Error', cached.error); return; }
-  const { item, receipt, features, candidate_invoices: candidates, remittances, history, similar_precedents: precedents, questions, timeline } = cached.view, money = ctx.money;
+  const { item, headline, evidence, similar_precedents: precedents, questions, timeline } = cached.view, money = ctx.money;
   const head = content.folder(item.id + ' · ' + stateLabels[item.state], { root: true, wide: true });
-  if (receipt) head.text('Bank line', receipt.bank_reference + ' · ' + receipt.channel.toUpperCase() + ' · ' + money(receipt.amount_minor) + ' · ' + (receipt.payer_name || 'no payer name') + ' · memo “' + (receipt.memo || '—') + '” · posted ' + when(receipt.posted_at));
-  else head.text('Invoice', item.subject_id + ' · ' + money(item.amount_minor || 0) + ' open');
+  head.text('Record', headline || (item.subject_id + (item.amount_minor ? ' · ' + money(item.amount_minor) : '')));
   if (item.proposal) {
     const proposal = head.folder('Proposal ' + item.proposal.id + ' · confidence ' + percent(item.proposal.confidence), { open: true });
     proposal.text('Lines', proposalLines(item.proposal, money).join('\n'));
@@ -223,13 +226,11 @@ export function renderWorkItem(content, ctx, itemId) {
   }
   if (item.last_rejection) head.text('Last rejection', item.last_rejection.by + ': ' + item.last_rejection.reason);
   decisionControls(head, item, ctx, questions?.find(row => row.id === item.open_question_id));
-  if (features) {
-    const evidence = content.folder('Evidence', { root: true, wide: true });
-    evidence.text('References', (features.memo_refs?.length ? 'Memo cites ' + features.memo_refs.join(', ') : 'Memo cites no invoice') + (remittances?.length ? ' · remittance lists ' + remittances.flatMap(row => row.rows.map(line => line.invoice_id + (line.deduction_code ? ' (' + line.deduction_code + ' ' + money(line.deduction_minor) + ')' : ''))).join(', ') : ''));
-    evidence.text('Payer', (features.payer.name_matches.length ? 'Matches ' + features.payer.name_matches.join(', ') : 'Matches no customer name') + (features.payer.paid_before.length ? ' · has paid ' + features.payer.paid_before.map(row => row.customer_id + ' ×' + row.count).join(', ') : ''));
-    evidence.text('Candidate invoices', candidates.map(row => row.invoice_id + ' · ' + row.customer_name + ' · ' + money(row.open_minor) + ' open · ' + row.reasons.join(', ')).join('\n') || 'None');
-    if (history?.treatments?.length) evidence.text('How this customer was handled', history.receipts + ' receipts · ' + history.treatments.map(row => row.treatment + ' ×' + row.count + (row.gap_range ? ' (' + row.gap_range.join('–') + ')' : '')).join(' · '));
-    if (precedents?.length) evidence.text('Earlier decisions by people', precedents.map(row => when(row.at) + ' · ' + actorLabel(row.human.by) + ' ' + row.human.decision + ': ' + row.human.reason).join('\n'));
+  if (evidence?.length || precedents?.length) {
+    // The seat's domain writes the evidence as labelled text, so the console reads the same for any seat.
+    const pane = content.folder('Evidence', { root: true, wide: true });
+    for (const row of evidence || []) pane.text(row.label, row.text);
+    if (precedents?.length) pane.text('Earlier decisions by people', precedents.map(row => when(row.at) + ' · ' + actorLabel(row.human.by) + ' ' + row.human.decision + ': ' + row.human.reason).join('\n'));
   }
   const log = content.folder('Timeline', { root: true, wide: true });
   log.text('Transitions', timeline.map(row => when(row.at) + ' · ' + actorLabel(row.actor) + ' (' + row.role + ') · ' + row.action + (row.allowed === false ? ' · BLOCKED' : '') + (Object.keys(row.diff || {}).length ? ' · ' + Object.entries(row.diff).map(([field, [from, to]]) => field + ': ' + (from ?? '∅') + ' → ' + (to ?? '∅')).join(', ') : '') + (row.reason ? '\n    ' + row.reason : '')).join('\n'));
