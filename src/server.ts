@@ -577,7 +577,9 @@ export async function startServer(options: ServiceOptions & { port?: number } = 
 if (import.meta.main) {
   mkdirSync(resolve(root, 'data'), { recursive: true, mode: 0o700 });
   const webhookPorts = process.env.FINANCE_WORLD_WEBHOOK_PORTS?.split(',').map(p => Number(p.trim()));
-  const service = await startServer({ database: process.env.FINANCE_WORLD_DB, webhookPorts });
+  // Seat runs per company per hour: a guard against a looping queue. The default suits a deployment; a demo machine raises it.
+  const maxSeatRunsPerHour = Number(process.env.FINANCE_WORLD_SEAT_RUNS_PER_HOUR) > 0 ? Number(process.env.FINANCE_WORLD_SEAT_RUNS_PER_HOUR) : undefined;
+  const service = await startServer({ database: process.env.FINANCE_WORLD_DB, webhookPorts, ...(maxSeatRunsPerHour ? { maxSeatRunsPerHour } : {}) });
   console.log(JSON.stringify({ service: 'finance-world', url: service.baseUrl, synthetic: true, agent: loadAgentConfig() }));
   let stopping = false;
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { if (!stopping) { stopping = true; void service.close(); } });
