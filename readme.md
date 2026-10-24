@@ -214,6 +214,7 @@ The shell adapts the neutral surfaces, compact sidebar, tabs, split panes, searc
 | `GEMINI_API_KEY`, `GOOGLE_CLOUD_PROJECT` | Enable the default world generator, `gemini-4-argon` on Vertex AI (`global`). The process environment takes precedence over the key file. Without both, generation uses Claude. |
 | `FINANCE_WORLD_ARGON_PRICING` | Optional JSON with verified `inputUsdPerMillion`, `cachedInputUsdPerMillion`, `outputUsdPerMillion`, and `source`. Without it, Argon token usage is recorded and its dollar cost is reported as unknown. Invalid pricing disables Argon. |
 | `FINANCE_WORLD_PORT` | Defaults to `24300`. |
+| `FINANCE_WORLD_SEAT_RUNS_PER_HOUR` | Seat runs per company per hour, a guard against a looping queue. Defaults to 12; a demo machine that replays a month quickly sets it higher. |
 | `FINANCE_WORLD_DB` | Defaults to `data/worlds.sqlite`; use a separate file for an isolated environment. |
 | `FINANCE_WORLD_WEBHOOK_PORTS` | Comma-separated additional local callback ports. The service port is allowed by default; callbacks require literal `http://127.0.0.1:PORT/…`. |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID` | Optional Slack for the cash-application seat ([manifest](docs/slack-app-manifest.yaml)). The bot token is `xoxb-`, and the app-level token is `xapp-` with `connections:write` for Socket Mode. Tokens are read the same way as the other keys and never reach the console or the model. |

@@ -2,7 +2,7 @@
 
 **Who holds what.** Laptop: the gram console, signed in as the controller (the Touring Finance Director's seat). Phone: Slack `#settle`, signed in as the Tour Accountant, a second account mapped in `SLACK_ACCOUNTANTS`; hand it to the judge. Both simulated people off under **Autonomy and people**.
 
-**Start state.** A company that already onboarded: the rules it read from last season approved, Melbourne through Auckland posted, Perth and Adelaide waiting. Boot it with `FINANCE_WORLD_DB=$PWD/data/demo-tour.sqlite bun run start` (the baked database lives in `data/`, which Git ignores; keep a copy). Slack is bound to `#settle`; `SLACK_CONTROLLERS` is the controller's user id and `SLACK_ACCOUNTANTS` the Tour Accountant's, once that account has joined the workspace.
+**Start state.** A company that already onboarded: the rules it read from last season approved, Melbourne through Auckland posted, Perth and Adelaide waiting. Boot it with `FINANCE_WORLD_SEAT_RUNS_PER_HOUR=60 FINANCE_WORLD_DB=$PWD/data/demo-tour.sqlite bun run start` (the run-rate guard defaults to 12 an hour, which a rehearsal can use up) (the baked database lives in `data/`, which Git ignores; keep a copy). Slack is bound to `#settle`; `SLACK_CONTROLLERS` is the controller's user id and `SLACK_ACCOUNTANTS` the Tour Accountant's, once that account has joined the workspace.
 
 **Ninety seconds.**
 
