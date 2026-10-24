@@ -1,0 +1,59 @@
+/** Observed bank charges and interest are external cash facts. Classification
+ * clears each fact's suspense amount once; it never executes a second payment.
+ * Bank dates retain the external source time. GL dates always reflect posting.
+ */
+import type {Action,Actor,World} from './world.ts';
+import type {ProcurementHooks} from './procurement.ts';
+export const bankActivityAccounts=[['bank-suspense','Unclassified bank activity','asset'],['bank-fee-expense','Bank fee expense','expense'],['interest-income','Bank interest income','revenue']];
+export const bankActivityRequirements:Record<string,{role:'controller'|'operator';system:string;external?:boolean}>={record_bank_activity:{role:'controller',system:'mercury',external:true},classify_bank_activity:{role:'operator',system:'netsuite'}};
+export type BankActivityHooks=Omit<ProcurementHooks,'effect'>&{effect:(type:string,targetId:string,amount:number,lines:any[],externalId:string,bankDelta:number)=>any};
+export function normalizeBankActivity(w:World){w.bankActivities??=[];}
+const pair=(debit:string,credit:string,amount:number)=>[{account_id:debit,debit_minor:amount},{account_id:credit,credit_minor:amount}];
+function bankIdentity(row:any){return [row.id,row.source_id,row.receipt_id,row.source_transaction_id,row.external_event_id].filter(Boolean);}
+function sourceInUse(w:World,id:string){return w.bankTransactions.some(row=>bankIdentity(row).includes(id))||w.bankActivities.some((row:any)=>[row.id,row.source_transaction_id,row.operation_id,row.bank_transaction_id,row.receipt_id,row.external_event_id].includes(id));}
+function safe(value:bigint,h:BankActivityHooks){if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<BigInt(Number.MIN_SAFE_INTEGER))h.fail('bank_activity_balance_overflow','This bank activity would exceed an exact aggregate money balance',409);}
+function effectiveBalance(w:World,accountId:string,h:BankActivityHooks){let value=BigInt(h.find(w.accounts,accountId,'GL account').balance_minor);for(const operation of w.operations.filter(row=>row.status==='settled'&&!row.journal_id))for(const line of operation.journal_lines??[])if(line.account_id===accountId)value+=BigInt(line.debit_minor??0)-BigInt(line.credit_minor??0);return value;}
+function checkAccounting(w:World,lines:any[],h:BankActivityHooks){for(const line of lines)safe(effectiveBalance(w,line.account_id,h)+BigInt(line.debit_minor??0)-BigInt(line.credit_minor??0),h);}
+function observedTime(w:World,value:any,h:BankActivityHooks){
+  if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)||!Number.isFinite(Date.parse(value))||new Date(value).toISOString()!==value||value>w.now)h.fail('invalid_bank_activity_timestamp','posted_at must be an observed UTC ISO timestamp with milliseconds, no later than simulation time');
+  const opening=w.bankTransactions.find(row=>row.id==='bank-opening');if(!opening||value<opening.posted_at)h.fail('invalid_bank_activity_timestamp','Activity cannot precede the known operating-bank opening history');
+  if(w.bankStatements.some((statement:any)=>statement.status==='closed'&&statement.account_id==='cash-bank'&&statement.currency==='USD'&&value<=statement.end_at))h.fail('bank_activity_closed_statement','Reopen every affected closed statement before recording an earlier bank fact',409);return value as string;
+}
+export function bankActivityAction(w:World,action:Action,actor:Actor,h:BankActivityHooks):{handled:boolean;result?:any}{
+  const type=action.type??action.action;if(!type||!bankActivityRequirements[type])return {handled:false};const done=(result:any)=>({handled:true,result});
+  const allowed=type==='record_bank_activity'?['type','action','source_transaction_id','account_id','currency','kind','amount_minor','posted_at','description','external_event_id']:['type','action','bank_activity_id','account_id'];
+  if(Object.keys(action).some(key=>!allowed.includes(key))||(action.type&&action.action&&action.type!==action.action))h.fail('invalid_bank_activity_field','Unsupported bank-activity action field');
+  if(type==='record_bank_activity'){
+    if(action.account_id!=='cash-bank'||action.currency!=='USD')h.fail('unsupported_bank_activity_account','Only the USD operating bank account is supported');
+    if(!['fee','interest'].includes(action.kind))h.fail('invalid_bank_activity_kind','Observed bank activity must be a fee or interest');
+    const sourceId=h.text(action.source_transaction_id,'source_transaction_id',200),amount=h.integer(action.amount_minor,'amount_minor'),at=observedTime(w,action.posted_at,h),description=h.text(action.description,'description');
+    if(sourceInUse(w,sourceId))h.fail('duplicate_bank_activity_source','Source transaction ID is already a canonical bank identity; recorded cash facts cannot be reused',409);
+    if(/^(?:(?:op|receipt|banktx|bank-activity|pi)_\d+|banktx-op_\d+|bank-opening|bank-sale-\d+)$/.test(sourceId))h.fail('duplicate_bank_activity_source','External source IDs cannot use reserved internal bank, operation, receipt or payment identity namespaces',409);
+    const delta=action.kind==='fee'?-amount:amount,lines=action.kind==='fee'?pair('bank-suspense','cash-bank',amount):pair('cash-bank','bank-suspense',amount);
+    safe(w.bankTransactions.filter(row=>row.status==='posted').reduce((sum,row)=>sum+BigInt(row.amount_minor),0n)+BigInt(delta),h);checkAccounting(w,lines,h);
+    const activity:any={id:h.id('bank-activity'),source_transaction_id:sourceId,account_id:'cash-bank',currency:'USD',kind:action.kind,amount_minor:amount,cash_effect_minor:delta,posted_at:at,observed_at:w.now,description,status:'unclassified',recorded_by:actor.id,external_event_id:action.external_event_id};
+    const operation=h.effect('bank_activity_observed',activity.id,amount,lines,action.external_event_id,delta),bank=w.bankTransactions.find(row=>row.source_id===operation.id);
+    if(!bank)h.fail('bank_activity_missing_receipt','Observed cash operation did not produce its bank receipt',409);
+    // Check newly allocated identities too. A caller cannot preselect the next
+    // generated operation/receipt/bank ID as an independent external source.
+    if([activity.id,operation.id,operation.receipt_id,bank.id].includes(sourceId))h.fail('duplicate_bank_activity_source','Source transaction ID collides with a newly allocated canonical identity',409);
+    bank.posted_at=at;bank.source_transaction_id=sourceId;bank.bank_activity_id=activity.id;bank.description=description;
+    operation.bank_activity_id=activity.id;operation.source_transaction_id=sourceId;operation.source_posted_at=at;operation.bank_transaction_id=bank.id;
+    activity.operation_id=operation.id;activity.bank_transaction_id=bank.id;activity.receipt_id=operation.receipt_id;
+    const doc=h.document('observed-bank-activity',`Observed bank ${activity.kind}: ${sourceId}`,`The bank reported ${activity.kind} ${sourceId} on ${at}: ${delta} USD cents to the operating account. Observed at ${w.now}. ${description}. Canonical bank transaction ${bank.id}, source operation ${operation.id}, receipt ${operation.receipt_id}. Cash is already reflected; classify the matching suspense amount without paying it again. The source bank timestamp is not a backdated ledger posting.`,{bank_activity_id:activity.id,source_transaction_id:sourceId,bank_transaction_id:bank.id,operation_id:operation.id,receipt_id:operation.receipt_id,external_event_id:action.external_event_id});activity.document_id=doc.id;w.bankActivities.push(activity);
+    h.mail({from:'activity@bank.simulation.test',subject:`Bank ${activity.kind} observed: ${sourceId}`,body:doc.body,source_refs:[activity.id,doc.id,bank.id,operation.receipt_id]});h.emit('bank_activity.recorded',{bank_activity_id:activity.id,source_transaction_id:sourceId,bank_transaction_id:bank.id,operation_id:operation.id,receipt_id:operation.receipt_id,kind:activity.kind,amount_minor:amount,cash_effect_minor:delta,posted_at:at,document_id:doc.id});return done({bank_activity:activity,operation,bank_transaction:bank});
+  }
+  h.available(['netsuite']);const activity=h.find(w.bankActivities,action.bank_activity_id,'Bank activity'),expected=activity.kind==='fee'?'bank-fee-expense':'interest-income';
+  if(action.account_id!==expected)h.fail('bank_activity_classification_mismatch',`Observed ${activity.kind} can only be classified to ${expected}`,409);
+  const bank=h.find(w.bankTransactions,activity.bank_transaction_id,'Observed bank transaction'),observed=h.find(w.operations,activity.operation_id,'Observed bank operation');
+  const amount=activity.amount_minor,delta=activity.kind==='fee'?-amount:amount;
+  if(!['fee','interest'].includes(activity.kind)||!['unclassified','classified'].includes(activity.status)||!Number.isSafeInteger(amount)||amount<1||amount>1e12||activity.cash_effect_minor!==delta||activity.account_id!=='cash-bank'||activity.currency!=='USD'||
+    bank.source_id!==observed.id||bank.source_transaction_id!==activity.source_transaction_id||bank.bank_activity_id!==activity.id||bank.amount_minor!==delta||bank.status!=='posted'||bank.account_id!==activity.account_id||bank.currency!==activity.currency||bank.posted_at!==activity.posted_at||bank.receipt_id!==activity.receipt_id||
+    observed.type!=='bank_activity_observed'||observed.status!=='settled'||observed.target_id!==activity.id||observed.amount_minor!==amount||observed.cash_effect_minor!==delta||observed.currency!==activity.currency||observed.receipt_id!==activity.receipt_id||observed.source_transaction_id!==activity.source_transaction_id||observed.source_posted_at!==activity.posted_at||observed.bank_transaction_id!==bank.id)h.fail('bank_activity_evidence_mismatch','Canonical bank cash, date, account, currency, source amount and original receipt must agree with the activity',409);
+  if(activity.status==='classified'){const operation=h.find(w.operations,activity.classification_operation_id,'Bank classification operation');if(operation.type!=='bank_activity_classified'||operation.target_id!==activity.id||operation.cash_effect_minor!==0||operation.amount_minor!==amount||activity.classification_account_id!==expected)h.fail('bank_activity_evidence_mismatch','Existing classification must still reference its original cash-neutral operation',409);return done({bank_activity:activity,operation,replayed:true});}
+  const lines=activity.kind==='fee'?pair('bank-fee-expense','bank-suspense',activity.amount_minor):pair('bank-suspense','interest-income',activity.amount_minor);checkAccounting(w,lines,h);
+  const operation=h.effect('bank_activity_classified',activity.id,activity.amount_minor,lines,`classify-bank-activity:${activity.id}`,0);operation.bank_activity_id=activity.id;operation.source_transaction_id=activity.source_transaction_id;
+  activity.status='classified';activity.classification_account_id=expected;activity.classification_operation_id=operation.id;activity.classified_at=w.now;activity.classified_by=actor.id;
+  const doc=h.document('bank-activity-classification',`Classified bank ${activity.kind}: ${activity.source_transaction_id}`,`Operator ${actor.id} classified ${activity.amount_minor} USD cents from bank suspense to ${expected}, grounded in source document ${activity.document_id} and original bank receipt ${activity.receipt_id}. Classification operation ${operation.id} has zero cash effect. Deferred accounting, if any, retains these same journal lines for one later posting.`,{bank_activity_id:activity.id,source_transaction_id:activity.source_transaction_id,classification_operation_id:operation.id,bank_transaction_id:bank.id,original_receipt_id:activity.receipt_id});activity.classification_document_id=doc.id;
+  h.emit('bank_activity.classified',{bank_activity_id:activity.id,source_transaction_id:activity.source_transaction_id,classification_operation_id:operation.id,account_id:expected,amount_minor:activity.amount_minor,cash_effect_minor:0,document_id:doc.id});return done({bank_activity:activity,operation});
+}

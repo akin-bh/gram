@@ -1,0 +1,43 @@
+import {test,expect} from 'bun:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {hash} from '../src/store.ts';
+import {foreignSettlementCashProof} from '../src/foreign-obligations.ts';
+import {start} from './integration-fixture.ts';
+const date='2026-10-24T09:00:00.000Z',sourceFacts={issued_at:'2026-10-21T09:00:00.000Z',due_at:'2026-10-30T09:00:00.000Z',service_completed_at:'2026-10-20T09:00:00.000Z',completion_reference:'accepted-service'};
+const okay=(response:any)=>{assert.equal(response.status,200,JSON.stringify(response.data));return response.data.result;};
+function blueprint(){return {version:1,opening_at:date,period_closed:true,
+ bank_accounts:[{ref:'euro',name:'EUR',currency:'EUR'}],fx_quotes:[{ref:'original',base_currency:'EUR',quote_currency:'USD',numerator:'11',denominator:'10',observed_at:'2026-10-01T09:00:00.000Z',expires_at:'2026-10-30T09:00:00.000Z'},{ref:'closing',base_currency:'EUR',quote_currency:'USD',numerator:'12',denominator:'10',observed_at:date,expires_at:'2026-10-31T09:00:00.000Z'}],
+ foreign_counterparties:[{ref:'client',kind:'customer',name:'Studio',email:'billing@studio.test',currency:'EUR'},{ref:'supplier',kind:'vendor',name:'Supply',email:'ap@supply.test',currency:'EUR'}],
+ foreign_contracts:[{ref:'sale',counterparty_ref:'client',amount_minor:100000,description:'Completed design',signed_at:'2026-10-10T09:00:00.000Z'},{ref:'purchase',counterparty_ref:'supplier',amount_minor:60000,description:'Received services',signed_at:'2026-10-10T09:00:00.000Z'}],
+ foreign_invoices:[{ref:'receivable',contract_ref:'sale',invoice_number:'SALE-1',amount_minor:100000,quote_ref:'original',...sourceFacts}],foreign_bills:[{ref:'payable',contract_ref:'purchase',invoice_number:'BILL-1',amount_minor:60000,quote_ref:'original',...sourceFacts}],
+ payroll_policy:{ref:'policy',name:'Payroll',mode:'synthetic',employee_withholding_bps:2000,employer_tax_bps:765},employees:[{ref:'ava',name:'Ava',hourly_rate_minor:2500,time_records:[{ref:'approved-time',period_start:'2026-10-01',period_end:'2026-10-14',minutes:2400}]}]};}
+test('custom blueprint and native AR/AP cross real HTTP scopes, approvals, outages, ERP mirrors and durable restart',async()=>{
+ const folder=mkdtempSync(join(tmpdir(),'gram-foreign-http-')),database=join(folder,'worlds.sqlite');let f=await start(database);
+ try{
+  const invalid=blueprint();invalid.foreign_bills[0].amount_minor=60001;const failed=await f.call('/api/worlds',{kind:'foreign-service-close',startingCashMinor:100000,blueprint:invalid});expect(failed.status).toBe(400);expect(f.server.store.worlds()).toHaveLength(0);
+  const created=await f.call('/api/worlds',{kind:'foreign-service-close',name:'Trade',startingCashMinor:100000,blueprint:blueprint()});expect(created.status).toBe(201);let w=created.data.world;const id=w.id,prefix=`/api/worlds/${id}`,token=f.agent(id),ref=(alias:string)=>w.blueprintManifest.refs[alias].id,bank=ref('euro'),invoice=ref('receivable'),bill=ref('payable'),quote=ref('closing'),state=async()=>(await f.call(prefix)).data;
+  expect(w.foreignInvoices).toHaveLength(1);expect(w.foreignBills).toHaveLength(1);expect(w.employees).toHaveLength(1);expect(w.invoices).toHaveLength(0);expect(w.bills).toHaveLength(0);expect(w.payrollRuns).toHaveLength(0);expect(w.sourceMode).toBe('blueprint');const history=JSON.stringify(w.generationHistory);
+  const caps=(await f.call('/api/capabilities')).data;expect(caps.coverage.scenario_family_count).toBe(13);expect(caps.blueprints.limits.source_records).toBe(200);expect(caps.foreign_services.native_currencies).toContain('EUR');
+  for(const type of ['record_foreign_counterparty','record_foreign_contract','record_foreign_invoice','record_service_bill','record_vendor'])expect((await f.act(id,{type,external_event_id:'forged'},token)).status).toBe(403);
+  const collection={type:'collect_foreign_invoice',invoice_id:invoice,bank_account_id:bank,amount_minor:100000,quote_id:quote};expect((await f.act(id,collection,token)).status).toBe(401);
+  for(const provider of ['netsuite','mercury','quickbooks','gmail','gusto'])await f.connect(id,provider);
+  expect((await f.call(prefix+'/webhooks',{events:['operation.*']})).status).toBe(201);
+  for(const [kind,obligation_id] of [['invoice',invoice],['bill',bill]])okay(await f.act(id,{type:'revalue_foreign_obligation',kind,obligation_id,quote_id:quote},token));
+  expect((await f.act(id,{type:'pay_foreign_bill',bill_id:bill,bank_account_id:bank,amount_minor:60000,quote_id:quote},token)).status).toBe(409);
+  const requested=okay(await f.act(id,collection,token,'collect-once'));expect(requested.status).toBe('awaiting_approval');expect((await f.act(id,{type:'decide_approval',approval_id:requested.approval_id,decision:'approve'},token)).status).toBe(403);
+  okay(await f.act(id,{type:'decide_approval',approval_id:requested.approval_id,decision:'approve'}));okay(await f.act(id,{type:'set_fault',system:'bank',mode:'offline'}));const rows=(await state()).world.bankTransactions.length;okay(await f.act(id,{type:'advance_time',hours:1}));expect((await state()).world.bankTransactions).toHaveLength(rows);
+  okay(await f.act(id,{type:'set_fault',system:'bank',mode:'healthy'}));okay(await f.act(id,{type:'advance_time',hours:1}));let snapshot=await state();w=snapshot.world;expect(w.foreignInvoices[0].status).toBe('settled');expect(snapshot.summary.bank_accounts.find((a:any)=>a.id===bank).current_balance_minor).toBe(100000);expect(snapshot.summary.cash_minor).toBe(100000);
+  expect((await f.act(id,collection,token,'collect-once')).data.replayed).toBe(true);expect((await state()).world.bankTransactions.length).toBe(rows+1);
+  const payment=okay(await f.act(id,{type:'pay_foreign_bill',bill_id:bill,bank_account_id:bank,amount_minor:60000,quote_id:quote},token));okay(await f.act(id,{type:'decide_approval',approval_id:payment.approval_id,decision:'approve'}));expect((await state()).summary.bank_accounts.find((a:any)=>a.id===bank).reserved_minor).toBe(60000);
+  okay(await f.act(id,{type:'set_foreign_counterparty_status',counterparty_id:ref('supplier'),enabled:false,reason:'Bank source unavailable',external_event_id:'supplier-disabled'}));okay(await f.act(id,{type:'advance_time',hours:1}));expect((await state()).world.foreignBills[0].amount_settled_minor).toBe(0);
+  okay(await f.act(id,{type:'set_foreign_counterparty_status',counterparty_id:ref('supplier'),enabled:true,reason:'Verified source recovered',external_event_id:'supplier-enabled'}));okay(await f.act(id,{type:'advance_time',hours:1}));snapshot=await state();w=snapshot.world;expect(w.foreignBills[0].status).toBe('settled');expect(snapshot.summary.bank_accounts.find((a:any)=>a.id===bank).current_balance_minor).toBe(40000);expect(w.settledUnposted.length).toBeGreaterThan(0);
+  const receipts=w.foreignSettlements.map((s:any)=>s.receipt_id);okay(await f.act(id,{type:'reopen_period'}));snapshot=await state();w=snapshot.world;expect(w.settledUnposted).toHaveLength(0);expect(snapshot.summary.foreign_obligations.register_balanced).toBe(true);expect(snapshot.summary.reconciliation.balanced).toBe(true);expect(JSON.stringify(w.generationHistory)).toBe(history);expect(w.foreignSettlements.map((s:any)=>s.receipt_id)).toEqual(receipts);
+  for(const s of w.foreignSettlements)expect(foreignSettlementCashProof(w,s.operation_id,bank)?.native_minor).toBe(s.kind==='invoice'?s.amount_minor:-s.amount_minor);
+  const qb=(await f.call(`/providers/quickbooks/worlds/${id}/v3/company/${id}/invoice/${invoice}`)).data.Invoice,ns=(await f.call(`/providers/netsuite/worlds/${id}/services/rest/record/v1/vendorBill/${bill}`)).data;expect(qb.CurrencyRef.value).toBe('EUR');expect(qb.TotalAmt).toBe(1000);expect(qb.Balance).toBe(0);expect(ns.currency.id).toBe('EUR');expect(ns.amountRemaining).toBe(0);
+  expect((await f.call(prefix+'/webhooks/dispatch',{})).data.failed).toBe(0);snapshot=await state();expect(snapshot.webhooks.receiver.receipts.length).toBeGreaterThan(0);expect(f.server.store.verify(id).valid).toBe(true);
+  const exact=hash(JSON.stringify(f.server.store.world(id))),chain=f.server.store.verify(id),port=Number(new URL(f.base).port);await f.close();f=await start(database,port);expect(hash(JSON.stringify(f.server.store.world(id)))).toBe(exact);expect(f.server.store.verify(id)).toEqual(chain);
+ }finally{await f.close();rmSync(folder,{recursive:true,force:true});}
+});

@@ -1,0 +1,647 @@
+/* Define-inspired shell; controls remain native dialkit/vanilla components. */
+:root {
+  color-scheme: light;
+  --shell: oklch(87.92% 0 89.88);
+  --pane: oklch(97.92% 0 87.05 / .94);
+  --pane-solid: color-mix(in srgb, oklch(97.92% 0 87.05) 94%, var(--shell));
+  --card: #fff;
+  --card-soft: oklch(97.92% 0 87.05);
+  --ink: oklch(25.42% 0 89.37);
+  --text: oklch(25.42% 0 89.37 / .78);
+  --muted: oklch(25.42% 0 89.37 / .52);
+  --faint: oklch(25.42% 0 89.37 / .36);
+  --line: oklch(25.42% 0 89.37 / .08);
+  --line-strong: oklch(25.42% 0 89.37 / .14);
+  --hover: oklch(25.42% 0 89.37 / .045);
+  --pressed: oklch(25.42% 0 89.37 / .08);
+  --selected: oklch(97.92% 0 87.05 / .65);
+  --accent: #4c6457;
+  --accent-soft: #eaf0eb;
+  --focus: #6884a0;
+  --danger: #a34e44;
+  --attention: #946b2d;
+  --scroll-thumb: oklch(25.42% 0 89.37 / .18);
+  --scroll-thumb-active: oklch(25.42% 0 89.37 / .34);
+  --shadow-card: 0 10px 32px -15px rgb(25 25 25 / .11), 0 0 0 1px rgb(25 25 25 / .035);
+  --shadow-popover: 0 18px 60px -20px rgb(20 20 20 / .3), 0 3px 10px rgb(20 20 20 / .06);
+  --font: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+  background: var(--shell);
+  font-family: var(--font);
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --shell: #262827; --pane: #303231; --card: #383a39; --card-soft: #333634;
+  --pane-solid: var(--pane);
+  --scroll-thumb: rgb(240 242 238 / .2); --scroll-thumb-active: rgb(240 242 238 / .38);
+  --ink: #f0f2ee; --text: #d2d5d0; --muted: #a3a8a1; --faint: #7a8179;
+  --line: rgb(240 242 238 / .08); --line-strong: rgb(240 242 238 / .15);
+  --hover: rgb(240 242 238 / .05); --pressed: rgb(240 242 238 / .09); --selected: rgb(240 242 238 / .1);
+  --accent: #b7d2ba; --accent-soft: #3c4b40; --focus: #9ab8d1;
+  --danger: #e7a198;
+  --attention: #d3b57a;
+  --shadow-card: 0 10px 32px -16px rgb(0 0 0 / .3), 0 0 0 1px rgb(255 255 255 / .025);
+  --shadow-popover: 0 20px 60px -18px rgb(0 0 0 / .6), 0 3px 12px rgb(0 0 0 / .2);
+}
+.dialkit-root, .dialkit-root[data-theme] {
+  --dial-surface: var(--hover); --dial-surface-hover: var(--pressed); --dial-surface-active: var(--pressed); --dial-surface-subtle: var(--line);
+  --dial-text-root: var(--ink); --dial-text-section: var(--text); --dial-text-label: var(--text); --dial-text-focus: var(--ink);
+  --dial-text-primary: var(--ink); --dial-text-secondary: var(--text); --dial-text-tertiary: var(--muted);
+  --dial-border: var(--line); --dial-border-hover: var(--line-strong); --dial-focus-ring: var(--focus);
+  --dial-glass-bg: var(--card); --dial-dropdown-bg: var(--card); --dial-radius: 9px; --dial-row-height: 36px; --dial-row-gap: 8px;
+  --dial-shadow: var(--shadow-card); --dial-shadow-dropdown: var(--shadow-popover);
+  font-family: var(--font); font-size: 13px; line-height: 1.5; color: var(--text);
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { width: 100%; min-width: 0; height: 100%; margin: 0; }
+body { overflow: hidden; }
+button, input, textarea, select { font: inherit; }
+button { -webkit-tap-highlight-color: transparent; }
+button:disabled { cursor: default; opacity: 1; }
+.dialkit-root :where(button, [role="button"], [role="separator"], [role="slider"]):focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+::selection { background: #c9d9d0; color: #29382d; }
+[hidden] { display: none !important; }
+svg { flex-shrink: 0; }
+#app { height: 100dvh; min-height: 0; overflow: hidden; background: var(--shell); }
+
+/* One scroll container per pane, with narrow gutters between work surfaces. */
+.workspace {
+  --sidebar-width: 256px; --assistant-width: 394px;
+  position: relative; display: grid; grid-template-columns: calc(var(--sidebar-width) - 8px) minmax(0, 1fr);
+  gap: 8px; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 8px;
+}
+.workspace:has(> .assistant) { grid-template-columns: calc(var(--sidebar-width) - 8px) minmax(0, 1fr) var(--assistant-width); }
+.workspace.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+.workspace.sidebar-collapsed:has(> .assistant) { grid-template-columns: minmax(0, 1fr) var(--assistant-width); }
+.workspace.sidebar-collapsed > .rail { display: none; }
+.rail, .workbench, .pane-column, .workspace-pane, .assistant { min-width: 0; min-height: 0; }
+.rail { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 0 6px; }
+.rail-header { display: flex; align-items: center; min-height: 32px; gap: 4px; }
+.rail-header .brand { flex: 1; min-width: 0; }
+.rail-header .brand .dialkit-button { justify-content: flex-start; min-height: 32px; padding: 4px 6px; border-radius: 7px; background: transparent; color: var(--ink); font-size: 18px; line-height: 24px; font-weight: 500; letter-spacing: -.05em; text-align: left; }
+.rail-header .brand .dialkit-button:hover { background: transparent; color: var(--ink); }
+.space-select { flex: 1; min-width: 0; }
+.rail > .space-select { flex: 0 0 auto; width: 100%; }
+.space-select .dialkit-select-trigger { height: 32px; padding: 0 8px; background: transparent; }
+.space-select .dialkit-select-trigger:hover { background: var(--hover); }
+.space-select .dialkit-select-trigger:focus, .space-select .dialkit-select-trigger[data-open="true"] { background: var(--card); }
+.space-select .dialkit-select-label { display: none; }
+.space-select .dialkit-select-right { flex: 1; min-width: 0; justify-content: space-between; }
+.space-select .dialkit-select-value { color: var(--text); font-size: 13px; font-weight: 500; text-align: left; }
+.space-select .dialkit-select-chevron { width: 15px; height: 15px; opacity: .45; }
+.rail-actions, .rail-dock, .toolbar-actions, .compact-actions { display: flex; align-items: center; gap: 4px; }
+.rail-actions { flex-shrink: 0; }
+.rail-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 8px 8px 20px 0; scroll-padding-block: 8px; }
+.rail-section { margin: 12px 0; }
+.rail-section:first-child { margin-top: 0; }
+.rail-nav { display: flex; flex-direction: column; gap: 3px; }
+.rail-dock { justify-content: space-between; flex-shrink: 0; min-height: 36px; padding: 0 2px; }
+.rail .dialkit-panel-inner { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; transform: none; }
+.rail .dialkit-panel-inner:not([data-collapsed="true"]) { padding-top: 0; }
+.rail .dialkit-folder-root > .dialkit-panel-header { position: static; padding: 0; margin: 0 0 5px; border: 0; background: transparent; }
+.rail .dialkit-panel-header::before, .rail .dialkit-folder-header::before { display: none; }
+.rail .dialkit-folder-header-top { min-height: 28px; padding: 4px 8px; }
+.rail .dialkit-folder-title, .rail .dialkit-folder-title-root { font-size: 12px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.rail .dialkit-folder-inner { gap: 3px; padding-bottom: 0; }
+.rail .dialkit-folder:not(.dialkit-folder-root) { margin: 7px 0 0; border: 0; }
+.rail .dialkit-folder:not(.dialkit-folder-root) > .dialkit-folder-header { height: 30px; }
+.rail .dialkit-folder-icon { width: 14px; height: 14px; }
+.rail .dialkit-button-group { gap: 2px; }
+.rail .dialkit-button, .nav-item.dialkit-button, .nav-item .dialkit-button {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 7px 9px;
+  border-radius: 10px; background: transparent; color: var(--text); text-align: left; font-weight: 400;
+}
+.rail .dialkit-button:hover, .nav-item.dialkit-button:hover, .nav-item .dialkit-button:hover { background: var(--hover); }
+.rail .dialkit-button.active, .rail .dialkit-button[aria-current], .nav-item.active .dialkit-button,
+.nav-item.active.dialkit-button, .nav-item[aria-current] .dialkit-button { color: var(--ink); background: var(--selected); box-shadow: 0 2px 4px rgb(0 0 0 / .035); }
+.nav-item svg, .rail .dialkit-button > svg { width: 17px; height: 17px; color: var(--muted); }
+.button-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.button-meta { flex-shrink: 0; margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
+
+.workbench { display: flex; gap: 8px; align-items: stretch; }
+.pane-column { position: relative; display: flex; flex: 1 1 auto; flex-direction: column; gap: 8px; }
+.workspace-pane { --pane-join: var(--pane-solid); position: relative; display: flex; flex: 1 1 auto; flex-direction: column; isolation: isolate; }
+.tab-strip { position: relative; z-index: 1; display: flex; flex-shrink: 0; align-items: center; gap: 3px; height: 35px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding: 0; }
+.tab-strip::-webkit-scrollbar { display: none; }
+.tab-item { position: relative; display: flex; align-items: center; flex: 0 1 180px; min-width: 100px; max-width: 200px; height: 32px; border-radius: 10px; }
+.tab-item::after { content: ""; position: absolute; right: -2px; top: 10px; bottom: 10px; width: 1px; background: var(--line); }
+.tab-item:hover { background: var(--hover); }
+.tab-item.active { z-index: 2; align-self: flex-end; height: 35px; border-radius: 12px 12px 0 0; background: var(--pane-join); }
+.tab-item:has(+ .tab-item.active)::after, .tab-item:not(.active):hover::after { opacity: 0; }
+/* The concave shoulders stay inside the strip's vertical bounds. */
+.tab-item.active::before, .tab-item.active::after { content: ""; position: absolute; top: auto; bottom: 0; width: 12px; height: 12px; opacity: 1; pointer-events: none; }
+.tab-item.active::before { left: -12px; background: radial-gradient(circle at 0 0, transparent 11.5px, var(--pane-join) 12px); }
+.tab-item.active::after { right: -12px; background: radial-gradient(circle at 100% 0, transparent 11.5px, var(--pane-join) 12px); }
+.workspace-pane[data-tab-flush~="start"] > .tab-strip > .tab-item.active::before,
+.workspace-pane:not([data-tab-flush]) > .tab-strip > .tab-item:first-child.active::before { display: none; }
+.workspace-pane[data-tab-flush~="end"] > .tab-strip > .tab-item.active::after { display: none; }
+.tab-button { flex: 1; min-width: 0; }
+.tab-button .dialkit-button-group { display: flex; }
+.tab-button .dialkit-button, button.tab-button { display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; height: 32px; padding: 0 10px; border: 0; border-radius: 9px; color: var(--muted); background: transparent; text-align: left; font-size: 12px; font-weight: 400; }
+.tab-button .dialkit-button:hover, button.tab-button:hover { color: var(--ink); background: transparent; }
+.tab-item.active .tab-button .dialkit-button, .tab-item.active button.tab-button { color: var(--text); }
+.tab-button svg { width: 15px; height: 15px; color: var(--muted); }
+.tab-close { flex: 0 0 auto; margin-right: 4px; opacity: 0; transition: opacity 120ms; }
+.tab-item:hover .tab-close, .tab-item.active .tab-close, .tab-item:focus-within .tab-close { opacity: 1; }
+.tab-close .dialkit-button, button.tab-close { width: 20px; height: 20px; min-height: 20px; padding: 3px; border-radius: 5px; }
+.tab-close svg { width: 12px; height: 12px; }
+.tab-add { position: relative; z-index: 3; flex-shrink: 0; margin: 0 3px; }
+.tab-item[draggable="true"] { cursor: grab; }
+.tab-item.dragging { opacity: .4; }
+.tab-item.drag-over, .tab-strip.drag-over { box-shadow: inset 2px 0 var(--focus); }
+.workspace-pane.drop-target { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: 12px; }
+.pane-toolbar { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; height: 44px; padding: 0 12px; border-radius: 12px 12px 0 0; background: var(--pane-join); }
+.workspace-pane[data-tab-flush~="start"] > .pane-toolbar,
+.workspace-pane:not([data-tab-flush]):has(> .tab-strip > .tab-item:first-child.active) > .pane-toolbar { border-top-left-radius: 0; }
+.workspace-pane[data-tab-flush~="end"] > .pane-toolbar { border-top-right-radius: 0; }
+.toolbar-title { flex: 1; min-width: 0; }
+.toolbar-title .dialkit-text-control { min-height: 24px; height: auto !important; padding: 2px 4px; background: transparent; }
+.toolbar-title .dialkit-text-label { display: none; }
+.toolbar-title .dialkit-text-input:not([aria-hidden="true"]) { width: 100%; font-size: 13px; font-weight: 500; line-height: 20px; text-align: left; color: var(--ink); white-space: nowrap; text-overflow: ellipsis; overflow: hidden !important; height: 20px !important; }
+.toolbar-actions { flex-shrink: 0; }
+.toolbar-actions .dialkit-button { min-height: 28px; padding: 4px 9px; font-size: 12px; font-weight: 400; background: transparent; }
+.toolbar-actions .dialkit-button:hover, .toolbar-actions .dialkit-button.active { background: var(--hover); }
+.pane-scroll { flex: 1; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; padding: 28px 24px 56px; border-radius: 0 0 12px 12px; background: var(--pane-join); box-shadow: 0 2px 4px rgb(0 0 0 / .035); }
+.content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-content: start; align-items: start; width: 100%; max-width: 808px; min-width: 0; margin: 0 auto; }
+.panel-host { min-width: 0; }
+.span-all, .record-reader, .record-list, .message-card, .composer, .empty-state { grid-column: 1 / -1; }
+.panel-host:empty { display: none; }
+
+/* Keep native folder headings and collapse controls. */
+.content .dialkit-panel-inner, .consent .dialkit-panel-inner { padding: 20px 24px 24px; border: 1px solid var(--line); border-radius: 24px; background: var(--card); box-shadow: var(--shadow-card); backdrop-filter: none; transform: none; max-height: none; }
+.content .dialkit-panel-inner:not([data-collapsed="true"]), .consent .dialkit-panel-inner:not([data-collapsed="true"]) { padding-top: 20px; }
+.content .dialkit-folder-root > .dialkit-panel-header, .consent .dialkit-folder-root > .dialkit-panel-header { position: static; padding: 0 0 12px; margin-bottom: 16px; background: transparent; border-bottom: 1px solid var(--line); }
+.content .dialkit-panel-header::before, .content .dialkit-folder-header::before, .consent .dialkit-panel-header::before { display: none; }
+.content .dialkit-folder-header-top { padding: 0; }
+.content .dialkit-folder-title-root, .consent .dialkit-folder-title-root { font-size: 14px; line-height: 22px; font-weight: 500; color: var(--ink); letter-spacing: -.015em; white-space: normal; }
+.content .dialkit-folder-title-row { white-space: normal; }
+.content .dialkit-folder-inner { gap: 8px; }
+.content .dialkit-folder:not(.dialkit-folder-root) { margin-top: 7px; border-color: var(--line); }
+.content .dialkit-folder:not(.dialkit-folder-root) > .dialkit-folder-header { height: 38px; }
+.content .dialkit-folder:not(.dialkit-folder-root) .dialkit-folder-title { font-size: 12px; font-weight: 500; }
+.content .dialkit-folder:not(.dialkit-folder-root) + .dialkit-folder:not(.dialkit-folder-root) { margin-top: -5px; }
+.content .dialkit-folder-icon { width: 16px; height: 16px; }
+.dialkit-button { min-width: 0; max-width: 100%; min-height: 34px; padding: 8px 12px; color: var(--text); font-weight: 500; line-height: 18px; overflow-wrap: anywhere; border-radius: 9px; transition: background 120ms, color 120ms, box-shadow 120ms; }
+.dialkit-button:not(:disabled):active { background: var(--pressed); }
+.dialkit-button > svg { width: 16px; height: 16px; }
+.dialkit-button:has(> svg) { display: flex; align-items: center; justify-content: center; gap: 7px; }
+.dialkit-button[aria-busy="true"] { opacity: .55; cursor: progress; }
+.compact-actions { flex-wrap: wrap; margin-top: 8px; }
+.compact-actions .dialkit-button-group, .toolbar-actions .dialkit-button-group, .rail-actions .dialkit-button-group, .rail-dock .dialkit-button-group { flex-direction: row; gap: 4px; }
+.compact-actions .dialkit-button { flex: 0 1 auto; }
+.compact-actions > div { min-width: 0; }
+.compact-actions .dialkit-button-group { flex-wrap: wrap; }
+.primary .dialkit-button, .dialkit-button.primary { color: var(--card); background: var(--ink); }
+.primary .dialkit-button:not(:disabled):hover, .dialkit-button.primary:not(:disabled):hover { opacity: .85; background: var(--ink); }
+.danger .dialkit-button, .dialkit-button.danger { color: #a4564e; }
+.icon-button .dialkit-button, button.icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 28px; height: 28px; min-height: 28px; padding: 5px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
+.icon-button .dialkit-button:hover, button.icon-button:hover { background: var(--hover); color: var(--ink); }
+.icon-button svg { width: 17px; height: 17px; }
+.icon-button .button-label { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.tab-close.icon-button .dialkit-button { width: 24px; height: 24px; min-height: 24px; padding: 4px; }
+.tab-close.icon-button svg { width: 12px; height: 12px; }
+.dialkit-root button.dialkit-button:disabled, .dialkit-root button.dialkit-select-trigger:disabled { color: var(--muted); background: var(--hover); box-shadow: none; opacity: 1; }
+.dialkit-root :is(.nav-item, .icon-button, .tab-button, .rail) .dialkit-button:disabled { background: transparent; }
+.dialkit-root .icon-button .dialkit-button:disabled { color: var(--faint); }
+.dialkit-root .dialkit-button:disabled :is(svg, .button-label, .button-meta), .dialkit-root .dialkit-select-trigger:disabled :is(.dialkit-select-label, .dialkit-select-value) { color: inherit; }
+
+/* Native TextControl values stay selectable; editable rows stay distinct. */
+.dialkit-text-control { gap: 12px; height: auto !important; padding: 8px 12px; background: var(--hover); border: 1px solid transparent; transition: background 120ms, border-color 120ms, box-shadow 120ms; }
+.dialkit-text-label { max-width: 42%; color: var(--muted); font-size: 12px; line-height: 18px; font-weight: 400; overflow-wrap: anywhere; }
+.dialkit-text-input { color: var(--text); font-size: 13px; line-height: 18px; font-weight: 400; text-align: left; margin-right: 0; }
+.editable .dialkit-text-input:not([aria-hidden="true"]) { scrollbar-gutter: stable; padding-inline-end: 10px; overscroll-behavior: contain; }
+.dialkit-text-input:focus-visible { background-image: none; }
+.dialkit-text-control:has(textarea:not([readonly]):focus) { background: var(--card); border-color: var(--line-strong); }
+.dialkit-text-control:has(textarea:not([readonly]):focus-visible) { border-color: var(--focus); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--focus) 20%, transparent); }
+.read-only .dialkit-text-control { align-items: flex-start; background: transparent; border: 0; padding: 5px 0; min-height: 28px; }
+.read-only .dialkit-text-label { flex: 0 0 31%; max-width: 42%; }
+.read-only .dialkit-text-input { color: var(--text); font-variant-numeric: tabular-nums; }
+.read-only:where(:not(.metric, .toolbar-title)) .dialkit-text-input:not([aria-hidden="true"]) { field-sizing: content; height: auto !important; max-height: none; overflow: hidden !important; scrollbar-gutter: auto; }
+.read-only .dialkit-text-input:is(:focus, :focus-visible) { outline: none; box-shadow: none; background-image: none; }
+.dialkit-select-trigger { min-width: 0; gap: 12px; line-height: 18px; border: 1px solid transparent; transition: background 120ms, border-color 120ms; }
+.dialkit-select-trigger:focus:not(:disabled), .dialkit-select-trigger[data-open="true"] { border-color: var(--line-strong); background: var(--card); }
+.dialkit-select-label { min-width: 0; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-weight: 400; }
+.dialkit-select-right { flex: 1; min-width: 0; justify-content: flex-end; }
+.dialkit-select-value { font-size: 13px; font-weight: 400; color: var(--text); }
+.dialkit-labeled-control { min-width: 0; height: auto; min-height: 36px; gap: 8px; padding: 4px 8px 4px 12px; }
+.dialkit-labeled-control-label { min-width: 0; flex-shrink: 1; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; font-weight: 400; }
+.dialkit-segmented-button { min-height: 28px; padding: 4px 8px; line-height: 20px; font-size: 12px; border-radius: 6px; }
+.dialkit-toggle { min-height: 36px; padding: 8px 11px; }
+.dialkit-toggle-label { font-size: 12px; font-weight: 400; }
+.dialkit-toggle-track { width: 30px; height: 18px; }
+.dialkit-toggle-thumb { width: 14px; height: 14px; }
+.dialkit-toggle[data-checked="true"] .dialkit-toggle-track { background: var(--accent); }
+.dialkit-toggle[data-checked="true"] .dialkit-toggle-thumb { background: var(--card); }
+.dialkit-slider-label { max-width: calc(100% - 88px); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 400; }
+.dialkit-slider-value { font-family: var(--font); font-size: 12px; font-variant-numeric: tabular-nums; }
+.dialkit-slider-input { right: 8px; width: 8ch; min-width: 4ch; max-width: min(96px, 42%); padding: 0 4px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--card); font-family: var(--font); font-size: 12px; line-height: 22px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.dialkit-root .dialkit-slider-input:focus { border-color: var(--focus); box-shadow: none; }
+.dialkit-slider:has(.dialkit-slider-input:focus) { box-shadow: inset 0 0 0 1px var(--line-strong); }
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px 24px; padding: 4px 0; }
+.metric { min-width: 0; }
+.metric .dialkit-text-control { display: flex; flex-direction: column; align-items: stretch; gap: 5px; height: auto !important; min-height: 64px; padding: 0; background: transparent; border: 0; }
+.metric .dialkit-text-label { flex: none; max-width: none; font-size: 11px; line-height: 16px; color: var(--muted); }
+.metric .dialkit-text-input:not([aria-hidden="true"]) { flex: none; width: 100%; height: 30px !important; line-height: 30px; font-size: clamp(19px, 1.7vw, 26px); font-weight: 450; color: var(--ink); letter-spacing: -.04em; white-space: nowrap; }
+.record-list .dialkit-button-group { gap: 0; }
+.record-row .dialkit-button, button.record-row { display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; min-height: 48px; padding: 11px 10px; border-radius: 9px; background: transparent; color: var(--text); font-size: 13px; font-weight: 400; text-align: left; }
+.record-row .dialkit-button:hover, button.record-row:hover { background: var(--hover); }
+.record-row + .record-row { border-top: 1px solid var(--line); }
+.record-row .button-meta { max-width: 35%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record-row svg { color: var(--muted); }
+.record-reader { min-width: 0; }
+.content.record-reader { grid-template-columns: minmax(0, 1fr); }
+.message-card { min-width: 0; padding: 24px 32px 32px; border: 1px solid var(--line); border-radius: 24px; background: var(--card); box-shadow: var(--shadow-card); }
+.message-card .dialkit-panel-inner { padding: 0 !important; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.message-card .dialkit-panel-header { border-bottom: 0 !important; margin-bottom: 22px !important; }
+.record-body { padding: 14px 8px 8px; }
+.prose .dialkit-text-control, .record-body .dialkit-text-control { display: block; height: auto !important; min-height: 0; overflow: visible; padding: 4px 0; background: transparent; border: 0; }
+.prose .dialkit-text-label, .record-body .dialkit-text-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.prose .dialkit-text-input:not([aria-hidden="true"]), .record-body .dialkit-text-input:not([aria-hidden="true"]) { field-sizing: content; width: 100%; height: auto !important; min-height: 24px; max-height: none; overflow: hidden !important; font-size: 14px; line-height: 1.65; font-weight: 400; color: var(--text); text-align: left; scrollbar-gutter: auto; }
+.composer { min-width: 0; }
+.composer .dialkit-panel-inner { border-radius: 22px; }
+.composer .prose .dialkit-text-input:not([aria-hidden="true"]) { min-height: 120px; }
+.composer .compact-actions { justify-content: flex-end; }
+.empty-state { display: grid; place-items: center; align-content: center; min-height: 260px; padding: 40px 24px; text-align: center; }
+.empty-state .dialkit-panel-inner { background: transparent; border: 0; box-shadow: none; }
+.empty-state .dialkit-panel-header { border: 0 !important; }
+.empty-state .dialkit-folder-title-row { justify-content: center; }
+.empty-state .dialkit-text-control { justify-content: center; background: transparent; }
+.empty-state .dialkit-text-label { display: none; }
+.empty-state .dialkit-text-input { text-align: center; color: var(--muted); }
+
+/* Handles are inside their owning column, pane, or sidebar. */
+.column-resize, .pane-resize, .sidebar-resize, .assistant-resize { position: absolute; z-index: 15; border: 0; background: transparent; touch-action: none; }
+.column-resize { top: 35px; right: -7px; bottom: 0; width: 8px; cursor: col-resize; }
+.sidebar-resize { top: 0; right: -8px; bottom: 0; width: 8px; cursor: col-resize; }
+.assistant-resize { top: 10px; left: 0; bottom: 10px; width: 8px; cursor: col-resize; }
+.pane-resize { left: 0; right: 0; bottom: -8px; height: 8px; cursor: row-resize; }
+.column-resize::after, .sidebar-resize::after, .assistant-resize::after { content: ""; position: absolute; top: 12px; bottom: 12px; left: 3px; width: 2px; border-radius: 2px; background: transparent; transition: background 120ms; }
+.pane-resize::after { content: ""; position: absolute; left: 20px; right: 20px; top: 3px; height: 2px; border-radius: 2px; background: transparent; transition: background 120ms; }
+.column-resize::after, .sidebar-resize::after, .pane-resize::after, .assistant-resize::after { pointer-events: none; }
+.column-resize:hover::after, .sidebar-resize:hover::after, .pane-resize:hover::after, .assistant-resize:hover::after { background: var(--line-strong); }
+.column-resize:active::after, .sidebar-resize:active::after, .pane-resize:active::after, .assistant-resize:active::after { background: var(--focus); }
+:is(.column-resize, .sidebar-resize, .pane-resize, .assistant-resize):is([data-resizing="true"], :has(button:focus-visible))::after { background: var(--focus); }
+.dialkit-root :is(.column-resize, .sidebar-resize, .pane-resize, .assistant-resize) button:focus-visible { outline: none; }
+body.is-resizing, body.is-resizing * { user-select: none !important; }
+body[data-resize-axis="horizontal"], body[data-resize-axis="horizontal"] * { cursor: col-resize !important; }
+body[data-resize-axis="vertical"], body[data-resize-axis="vertical"] * { cursor: row-resize !important; }
+.assistant { position: relative; display: flex; flex-direction: column; margin-top: 35px; border-radius: 14px; background: var(--pane-solid); overflow: hidden; box-shadow: 0 2px 4px rgb(0 0 0 / .025); }
+.assistant-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; gap: 8px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.assistant-header-actions { display: flex; flex-shrink: 0; gap: 2px; }
+.assistant-header .read-only { flex: 1; min-width: 0; }
+.assistant-header .dialkit-text-label { display: none; }
+.assistant-header .dialkit-text-control { padding: 3px 0; }
+.assistant-header .dialkit-text-input { color: var(--ink); font-weight: 500; }
+.assistant-body { display: flex; flex: 1 1 0; flex-direction: column; gap: 16px; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 20px 18px 24px; scroll-padding-block: 20px; }
+.assistant-body > * { flex-shrink: 0; }
+.assistant:has(.assistant-body[data-scrolled="true"]) .assistant-header { box-shadow: 0 4px 10px -6px rgb(0 0 0 / .2); }
+.assistant-body .dialkit-panel-inner { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; transform: none; backdrop-filter: none; }
+.assistant-body .dialkit-panel-header { position: static !important; padding: 0 0 10px !important; margin: 0; background: transparent !important; border: 0; }
+.assistant-body .dialkit-panel-header::before { display: none; }
+.assistant-body .dialkit-folder-title-root { font-size: 12px; font-weight: 500; }
+.assistant-body .dialkit-text-label { font-size: 11px; }
+.assistant-body .prose .dialkit-text-input { font-size: 13px; line-height: 1.65; }
+.assistant-body .message-card { padding: 14px 16px; border-radius: 16px; box-shadow: none; }
+.assistant-compose { flex-shrink: 0; margin: 8px 12px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); box-shadow: 0 4px 14px rgb(0 0 0 / .035); }
+.assistant-compose:has(.compose-body textarea:focus-visible) { border-color: var(--focus); box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus) 20%, transparent); }
+.assistant-compose .compose-body .dialkit-text-control { display: block; height: auto !important; padding: 2px; border: 0; background: transparent; }
+.assistant-compose .compose-body .dialkit-text-control:has(textarea:focus-visible) { box-shadow: none; }
+.assistant-compose .compose-body .dialkit-text-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.assistant-compose .compose-body .dialkit-text-input:not([aria-hidden="true"]) { field-sizing: content; width: 100%; min-height: 64px; max-height: 180px; height: auto !important; font-size: 13px; line-height: 20px; }
+.assistant-compose .compact-actions { justify-content: flex-end; margin-top: 8px; }
+.assistant-compose .dialkit-button { min-height: 28px; padding: 5px 10px; font-size: 12px; }
+.assistant-compose .compose-body .dialkit-text-input:not([aria-hidden="true"]) { overflow-y: auto !important; scrollbar-gutter: stable; }
+.agent-thread { width: 100%; min-width: 0; }
+.agent-task-preview { margin-bottom: 20px; }
+.agent-task-preview .dialkit-button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font-size: 12px; font-weight: 400; text-align: left; }
+.agent-task-preview .dialkit-button:hover { background: var(--hover); }
+.agent-task-preview .button-label { order: -1; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; line-height: 19px; }
+.agent-task-preview .dialkit-button svg { flex-shrink: 0; color: var(--muted); }
+.agent-task, .agent-original-task p { margin: 0; color: var(--text); font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-original-task { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.agent-original-task h3 { margin: 0 0 10px; color: var(--ink); font-size: 13px; font-weight: 500; }
+.agent-response-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 14px; color: var(--muted); font-size: 11px; line-height: 18px; }
+.agent-response-meta time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.agent-status { display: inline-flex; align-items: center; gap: 10px; min-width: 0; color: var(--text); }
+.agent-status-orb { display: block; flex-shrink: 0; }
+.agent-status-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.agent-status-label { font-size: 12px; line-height: 18px; }
+.agent-status-elapsed { color: var(--muted); font-size: 10px; line-height: 14px; font-variant-numeric: tabular-nums; }
+.agent-status[data-tone="attention"] .agent-status-label { color: var(--attention); }
+.agent-status[data-tone="error"] .agent-status-label { color: var(--danger); }
+.agent-status[data-running="false"] .agent-status-copy { flex-direction: row; align-items: baseline; gap: 8px; }
+.agent-stop .dialkit-button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); font-size: 12px; font-weight: 400; }
+.agent-stop .dialkit-button svg { width: 14px; height: 14px; }
+.agent-stop .dialkit-button:hover:not(:disabled) { background: var(--hover); border-color: var(--line-strong); }
+.agent-error { padding: 12px; border-left: 2px solid var(--danger); background: var(--hover); line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.agent-response-empty { color: var(--muted); }
+.agent-copy { margin-top: 16px; width: max-content; }
+.agent-history-row + .agent-history-row { border-top: 1px solid var(--line); }
+.agent-history-row .dialkit-button { display: grid; grid-template-columns: 18px minmax(0, 1fr); justify-items: start; align-items: start; gap: 5px 10px; width: 100%; padding: 12px 10px; text-align: left; border-radius: 10px; background: transparent; font-weight: 400; }
+.agent-history-row .dialkit-button:hover, .agent-history-row.active .dialkit-button { background: var(--hover); }
+.agent-history-row .button-label { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; line-height: 20px; }
+.agent-history-row .button-meta { grid-column: 2; margin: 0; }
+.markdown { min-width: 0; color: var(--text); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 14px; }
+.markdown :is(h1, h2, h3, h4, h5, h6) { margin: 24px 0 10px; color: var(--ink); font-size: 14px; line-height: 1.5; font-weight: 600; }
+.markdown h1 { font-size: 16px; }
+.markdown strong { color: var(--ink); font-weight: 600; }
+.markdown p:has(> strong:only-child) { margin-top: 22px; margin-bottom: 8px; }
+.markdown > p:first-child { margin-top: 0; }
+.markdown :is(ul, ol) { margin: 8px 0 18px; padding-inline-start: 20px; }
+.markdown li { padding-inline-start: 3px; margin: 8px 0; }
+.markdown li > p { margin-bottom: 6px; }
+.markdown li::marker { color: var(--muted); }
+.markdown blockquote { margin: 16px 0; padding: 2px 0 2px 14px; border-left: 2px solid var(--line-strong); color: var(--muted); }
+.markdown code { padding: 1px 4px; border-radius: 4px; background: var(--hover); font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.markdown pre { max-width: 100%; padding: 12px; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--card-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown pre code { padding: 0; background: transparent; white-space: inherit; }
+.markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.markdown a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+.markdown table { width: 100%; margin: 16px 0; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.markdown :is(th, td) { padding: 8px; border: 1px solid var(--line-strong); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.markdown th { background: var(--hover); color: var(--ink); font-weight: 500; }
+.markdown [data-align="center"] { text-align: center; }
+.markdown [data-align="right"] { text-align: right; }
+.markdown .markdown-task { list-style: none; }
+.markdown .markdown-task-marker { display: inline-block; margin-inline-start: -20px; width: 20px; color: var(--muted); }
+.markdown hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+
+/* Audit keeps navigation and evidence in separate, bounded reading surfaces. */
+.pane-scroll.audit-pane { display: flex; overflow: hidden; padding: 16px 18px 18px; }
+.content.audit-content { display: flex; flex: 1; min-height: 0; max-width: none; align-items: stretch; }
+.audit-screen { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--card); box-shadow: 0 3px 14px rgb(0 0 0 / .025); }
+.audit-toolbar { display: flex; align-items: center; flex-shrink: 0; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+.audit-search { flex: 1; min-width: 90px; }
+.audit-search .dialkit-text-control { display: block; padding: 6px 10px; border-radius: 8px; }
+.audit-search .dialkit-text-label, .audit-scope .dialkit-select-label { display: none; }
+.audit-search .dialkit-text-input:not([aria-hidden="true"]) { width: 100%; height: 20px !important; min-height: 20px; max-height: 20px; white-space: nowrap; overflow: hidden !important; scrollbar-gutter: auto; font-size: 12px; line-height: 20px; }
+.audit-search-clear { margin-left: -8px; }
+.audit-scope { flex: 0 0 122px; }
+.audit-scope .dialkit-select-trigger { min-height: 34px; padding: 7px 10px; border-radius: 8px; background: transparent; }
+.audit-tools { display: flex; align-items: center; flex-shrink: 0; gap: 2px; }
+.audit-verify .dialkit-button { min-height: 32px; padding: 6px 9px; font-size: 11px; font-weight: 400; background: transparent; }
+.audit-verify [data-tone="success"] { color: var(--accent); }
+.audit-verify [data-tone="error"], .audit-error { color: var(--danger); }
+.audit-error { margin: 8px 12px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.audit-columns { display: grid; grid-template-columns: minmax(280px, .96fr) minmax(320px, 1fr); flex: 1; min-height: 0; min-width: 0; }
+.audit-list, .audit-detail { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
+.audit-list { padding: 8px 10px 16px; scroll-padding-block: 10px; }
+.audit-detail { padding: 20px 22px 28px; border-left: 1px solid var(--line); scroll-padding-block: 20px; background: var(--card-soft); }
+.audit-day { padding: 10px 10px 6px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.audit-tree-item { position: relative; }
+.audit-tree-control .dialkit-button { position: relative; display: flex; align-items: center; justify-content: flex-start; gap: 0; width: 100%; height: 52px; min-height: 52px; padding: 6px 8px 6px calc(36px + var(--depth) * 18px); border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; font-weight: 400; }
+.audit-tree-control .dialkit-button:hover { background: var(--hover); }
+.audit-tree-control [aria-selected="true"] { background: var(--hover); border-color: var(--line); }
+.audit-tree-control .dialkit-button:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
+.audit-tree-control .audit-branches { position: absolute; top: 0; left: 0; width: auto; height: 52px; overflow: visible; pointer-events: none; fill: none; stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 1 3; stroke-linecap: round; }
+.audit-node-marker { position: absolute; left: calc(6px + var(--depth) * 18px); top: 18px; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; color: var(--muted); background: var(--card); border-radius: 5px; }
+.audit-node-marker svg { width: 14px; height: 14px; }
+.audit-node-marker[data-open="false"] svg { transform: rotate(-90deg); }
+.audit-node-marker[data-open] svg { transition: transform 140ms ease; }
+.audit-tree-control [data-tone="error"] .audit-node-marker { color: var(--danger); }
+.audit-tree-control [data-tone="attention"] .audit-node-marker { color: var(--attention); }
+.audit-tree-control [data-tone="success"] .audit-node-marker { color: var(--accent); }
+.audit-node-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.audit-node-title, .audit-node-caption { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.audit-node-title { color: var(--text); font-size: 12px; line-height: 18px; }
+.audit-node-caption { color: var(--muted); font-size: 10px; line-height: 16px; }
+.audit-node-time { flex-shrink: 0; margin-left: 10px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.audit-list-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 10px 0; }
+.audit-count { color: var(--muted); font-size: 11px; line-height: 18px; }
+.audit-load .dialkit-button { min-height: 28px; padding: 4px 8px; font-size: 11px; background: transparent; }
+.audit-empty { margin: 0; padding: 36px 14px; color: var(--muted); font-size: 12px; line-height: 1.6; text-align: center; }
+.audit-detail-header { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 16px; }
+.audit-detail-heading { flex: 1; min-width: 0; }
+.audit-event-number { margin-bottom: 4px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.audit-event-title { margin: 0; color: var(--ink); font-size: 15px; line-height: 22px; font-weight: 500; overflow-wrap: anywhere; }
+.audit-detail-actions { display: flex; flex-shrink: 0; gap: 2px; }
+.audit-back { display: none; }
+.audit-detail-modes { display: flex; gap: 4px; width: max-content; padding: 3px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 8px; }
+.audit-mode .dialkit-button { min-height: 26px; padding: 3px 11px; font-size: 11px; font-weight: 400; background: transparent; border-radius: 5px; }
+.audit-mode.active .dialkit-button { background: var(--card); box-shadow: 0 1px 3px rgb(0 0 0 / .06); color: var(--ink); }
+.audit-event-summary { margin: 0 0 18px; color: var(--text); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.audit-facts { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 8px 12px; margin: 0 0 22px; padding-bottom: 18px; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 18px; }
+.audit-facts dt { color: var(--muted); }
+.audit-facts dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.audit-raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+.audit-integrity { margin-top: 22px; padding-top: 10px; border-top: 1px solid var(--line); }
+.audit-integrity-toggle .dialkit-button { justify-content: flex-start; padding: 6px 0; background: transparent; text-align: left; font-size: 11px; font-weight: 400; }
+.audit-integrity-toggle [aria-expanded="false"] svg { transform: rotate(-90deg); }
+.audit-hash { display: block; margin: 3px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.7; overflow-wrap: anywhere; }
+.audit-data-tree dl { margin: 0; }
+.audit-data-row { position: relative; display: grid; grid-template-columns: minmax(70px, 38%) minmax(0, 1fr); gap: 3px 10px; padding: 7px 0; font-size: 11px; line-height: 18px; }
+.audit-data-key { min-width: 0; margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.audit-data-value { min-width: 0; margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-data-row[data-kind="number"] > .audit-data-value { font-variant-numeric: tabular-nums; }
+.audit-data-row[data-kind="boolean"] > .audit-data-value { color: var(--accent); }
+.audit-data-row[data-kind="null"] > .audit-data-value { color: var(--muted); }
+.audit-data-children { grid-column: 1 / -1; min-width: 0; margin: 4px 0 0 6px; padding-left: 14px; border-left: 1px dotted var(--line-strong); }
+.audit-data-children .audit-data-row::before { content: ""; position: absolute; left: -14px; top: 16px; width: 9px; border-top: 1px dotted var(--line-strong); }
+.audit-data-toggle .dialkit-button { justify-content: flex-start; gap: 5px; min-height: 20px; padding: 0; color: var(--text); background: transparent; text-align: left; font-size: 11px; font-weight: 500; line-height: 18px; border-radius: 3px; }
+.audit-data-toggle .button-label { white-space: normal; overflow-wrap: anywhere; }
+.audit-data-toggle svg { width: 11px; height: 11px; }
+.audit-data-toggle [aria-expanded="false"] svg { transform: rotate(-90deg); }
+.audit-data-more { width: max-content; max-width: 100%; margin-top: 4px; }
+.audit-data-more .dialkit-button { min-height: 22px; padding: 2px 6px; color: var(--accent); background: transparent; font-size: 10px; font-weight: 400; }
+.audit-data-key:focus-visible { outline: 1px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+.content.audit-record-content { display: block; }
+.audit-record { padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); }
+@container (max-width: 840px) {
+  .audit-columns { display: flex; }
+  .audit-list, .audit-detail { flex: 1; }
+  .audit-screen[data-reading="false"] .audit-detail, .audit-screen[data-reading="true"] .audit-list { display: none; }
+  .audit-detail { border-left: 0; }
+  .audit-back { display: block; margin-left: -6px; }
+}
+@container (max-width: 520px) {
+  .pane-scroll.audit-pane { padding: 8px 8px 10px; }
+  .audit-toolbar { flex-wrap: wrap; gap: 6px; padding: 10px; }
+  .audit-search { flex-basis: calc(100% - 34px); }
+  .audit-scope { flex: 0 0 122px; }
+  .audit-tools { margin-left: auto; }
+  .audit-detail { padding: 16px 14px 24px; }
+  .audit-list { padding-inline: 6px; }
+  .audit-node-time { margin-left: 6px; }
+  .audit-data-row { grid-template-columns: minmax(64px, 36%) minmax(0, 1fr); }
+}
+
+/* Composite hosts use native controls without exposing their form chrome. */
+.content .dialkit-panel-inner:not([data-collapsed="true"]) > .dialkit-folder-root > .dialkit-panel-header,
+.rail .dialkit-panel-inner:not([data-collapsed="true"]) > .dialkit-folder-root > .dialkit-panel-header,
+.consent .dialkit-panel-inner:not([data-collapsed="true"]) > .dialkit-folder-root > .dialkit-panel-header { position: static; padding-top: 0; background: transparent; }
+.list-filter { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.list-filter > .editable { flex: 1; min-width: 0; }
+.list-filter .dialkit-text-control { padding: 8px 12px; }
+.list-filter .dialkit-text-label { display: none; }
+.list-filter .dialkit-text-input { width: 100%; font-size: 12px; }
+.pagination { justify-content: center; padding-top: 8px; border-top: 1px solid var(--line); }
+.pagination > .read-only { flex: 0 1 150px; }
+.pagination .dialkit-text-label { display: none; }
+.pagination .dialkit-text-input { text-align: center; font-size: 11px; color: var(--muted); }
+.mailbox-actions { grid-column: 1 / -1; margin: 0 0 0 -4px; gap: 3px; }
+.mailbox-actions .dialkit-button { min-height: 30px; padding: 5px 10px; border-radius: 9px; font-weight: 400; background: transparent; }
+.mailbox-actions .active .dialkit-button { background: var(--pressed); color: var(--ink); box-shadow: none; }
+.mailbox-actions .dialkit-button:hover { background: var(--hover); }
+.message-meta { display: flex; flex-wrap: wrap; gap: 4px 24px; margin: -8px 0 14px; }
+.message-meta > .read-only { flex: 1 1 180px; min-width: 0; }
+.message-meta .dialkit-text-control { padding: 2px 0; min-height: 22px; }
+.message-meta .dialkit-text-label { flex: 0 0 auto; font-size: 11px; }
+.message-meta .dialkit-text-input { font-size: 12px; color: var(--muted); }
+.compose-body .dialkit-text-control { display: block; height: auto !important; min-height: 0; padding: 12px 0; background: transparent; border: 0; }
+.compose-body .dialkit-text-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.compose-body .dialkit-text-input:not([aria-hidden="true"]) { field-sizing: content; width: 100%; height: auto !important; min-height: 130px; max-height: 360px; overflow-y: auto !important; font-size: 14px; line-height: 1.65; scrollbar-gutter: stable; }
+.send-action { align-self: flex-end; }
+.send-action .dialkit-button { display: flex; align-items: center; gap: 7px; width: auto; padding: 7px 13px; color: var(--card); background: var(--ink); }
+.send-action .dialkit-button:hover { background: var(--ink); opacity: .86; }
+.assistant-suggestions { display: flex; flex-direction: column; gap: 5px; margin-top: auto; }
+.assistant-suggestions .dialkit-button { padding: 11px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.saved-search-row { display: flex; align-items: center; }
+.saved-search-row > .nav-item { flex: 1; min-width: 0; }
+.saved-search-row > .icon-button { flex-shrink: 0; }
+.column-resize .dialkit-button-group, .pane-resize .dialkit-button-group, .sidebar-resize .dialkit-button-group, .assistant-resize .dialkit-button-group { width: 100%; height: 100%; }
+.column-resize .dialkit-button, .pane-resize .dialkit-button, .sidebar-resize .dialkit-button, .assistant-resize .dialkit-button { width: 100%; height: 100%; min-height: 0; padding: 0; border: 0; border-radius: 0; cursor: inherit; background: transparent; }
+.column-resize .button-label, .pane-resize .button-label, .sidebar-resize .button-label, .assistant-resize .button-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.tab-item[data-drop="tab"] { box-shadow: inset 2px 0 var(--focus); }
+.workspace-pane[data-drop]::after { content: ""; position: absolute; z-index: 30; inset: 38px 3px 3px; border: 2px solid var(--focus); border-radius: 12px; background: color-mix(in srgb, var(--focus) 12%, transparent); pointer-events: none; }
+.workspace-pane[data-drop="left"]::after { right: 50%; }
+.workspace-pane[data-drop="right"]::after { left: 50%; }
+.workspace-pane[data-drop="top"]::after { bottom: 50%; }
+.workspace-pane[data-drop="bottom"]::after { top: 50%; }
+
+/* Native portals retain their positioning and keyboard behavior. */
+.dialkit-select-dropdown { z-index: 10000; min-width: 0; max-width: min(420px, calc(100vw - 16px)); padding: 4px 10px 4px 4px; scroll-padding-block: 4px; border-color: var(--line-strong); border-radius: 13px; background: var(--card); box-shadow: var(--shadow-popover); }
+.dialkit-select-option { min-width: 0; min-height: 36px; padding: 8px 12px; border-radius: 8px; color: var(--text); font-size: 12px; line-height: 20px; font-weight: 400; white-space: normal; overflow-wrap: anywhere; }
+.dialkit-select-option[data-selected="true"] { color: var(--ink); background: var(--hover); }
+.dialkit-select-option:hover, .dialkit-select-option:focus-visible { background: var(--pressed); color: var(--ink); }
+.modal-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: center; align-items: flex-start; padding: min(18vh, 150px) 20px 24px; background: rgb(35 38 35 / .1); backdrop-filter: blur(3px); }
+.command-dialog { display: flex; flex-direction: column; width: min(640px, 100%); max-height: min(600px, 75dvh); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 19px; background: var(--card); box-shadow: var(--shadow-popover); animation: pop-in 140ms ease-out; }
+.command-dialog.has-preview { width: min(840px, 100%); }
+.command-body { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
+.command-header { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.command-header > :first-child { flex: 1; min-width: 0; }
+.command-header .dialkit-text-control { display: block; min-height: 36px; height: auto !important; padding: 3px 10px; background: transparent; border: 1px solid transparent; }
+.command-header .dialkit-text-label { display: none; }
+.command-header .dialkit-text-input:not([aria-hidden="true"]) { width: 100%; height: 28px !important; line-height: 28px; font-size: 15px; }
+.command-results { flex: 1; min-width: 0; min-height: 100px; overflow: auto; padding: 8px; }
+.command-results .dialkit-panel-inner { padding: 0; background: transparent; border: 0; box-shadow: none; }
+.command-results .dialkit-button-group { gap: 2px; }
+.command-results .dialkit-button { display: flex; align-items: center; justify-content: flex-start; gap: 10px; min-height: 42px; padding: 9px 12px; border-radius: 10px; background: transparent; font-weight: 400; text-align: left; }
+.command-results .dialkit-button:hover, .command-results .dialkit-button.active, .command-results .dialkit-button[aria-selected="true"] { background: var(--hover); color: var(--ink); }
+.command-results .dialkit-button svg { color: var(--muted); }
+.command-preview { flex: 0 0 46%; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px; border-left: 1px solid var(--line); background: var(--card-soft); }
+.command-preview .dialkit-panel-inner { padding: 0; border: 0; background: transparent; box-shadow: none; }
+.command-preview .dialkit-text-control { background: transparent; }
+.command-preview .preview-title { margin-bottom: 14px; }
+.preview-title .dialkit-text-control { display: block; height: auto !important; padding: 0; border: 0; }
+.preview-title .dialkit-text-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.preview-title .dialkit-text-input:not([aria-hidden="true"]) { field-sizing: content; width: 100%; height: auto !important; line-height: 22px; font-size: 14px; font-weight: 500; color: var(--ink); }
+.command-preview .prose .dialkit-text-input { font-size: 13px; line-height: 1.65; }
+.command-footer { display: flex; flex-shrink: 0; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--card-soft); }
+.command-footer .dialkit-text-control { padding: 0; min-height: 18px; background: transparent; }
+.command-footer .dialkit-text-input { font-size: 11px; color: var(--muted); }
+.command-footer .dialkit-text-label { display: none; }
+.command-footer .dialkit-button { min-height: 26px; padding: 3px 7px; font-size: 11px; background: transparent; }
+.context-menu { position: fixed; z-index: 1100; min-width: 210px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; padding: 5px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--card); box-shadow: var(--shadow-popover); animation: pop-in 100ms ease-out; }
+.context-menu .dialkit-button-group { gap: 2px; }
+.context-menu .dialkit-button { justify-content: flex-start; min-height: 32px; padding: 7px 10px; border-radius: 8px; background: transparent; font-size: 12px; font-weight: 400; text-align: left; }
+.context-menu .dialkit-button:hover { background: var(--hover); }
+.status-toast { position: fixed; z-index: 1200; left: 50%; bottom: 22px; display: flex; align-items: center; gap: 8px; width: max-content; max-width: calc(100vw - 32px); transform: translateX(-50%); padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: var(--shadow-popover); transition: opacity 180ms, transform 180ms; }
+.status-toast .read-only .dialkit-text-control { display: block; width: max-content; max-width: 100%; min-height: 20px; padding: 0; border: 0; outline: none; box-shadow: none; background: transparent; }
+.status-toast .dialkit-text-label { display: none; }
+.status-toast .dialkit-text-input:not([aria-hidden="true"]) { field-sizing: content; width: auto; min-width: 0; max-width: min(440px, calc(100vw - 94px)); height: auto !important; max-height: min(144px, 30dvh); overflow-y: auto !important; color: var(--text); line-height: 20px; text-align: left; }
+.status-toast.quiet { opacity: 0; pointer-events: none; transform: translate(-50%, 8px); visibility: hidden; }
+.status-toast > .read-only { flex: 1; min-width: 0; }
+.status-toast .read-only .dialkit-text-input,
+.status-toast .read-only .dialkit-text-input:focus,
+.status-toast .read-only .dialkit-text-input:focus-visible { border: 0; outline: none !important; box-shadow: none !important; background: transparent; background-image: none; }
+.dialkit-button[aria-busy="true"]::after { content: ""; display: inline-block; width: 12px; height: 12px; margin-left: 6px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -2px; animation: gram-spin .7s linear infinite; }
+@keyframes gram-spin { to { transform: rotate(360deg); } }
+.status-toast[data-error="true"] { border-color: color-mix(in srgb, #ad625a 40%, var(--line)); }
+.dialkit-root .editable[data-invalid="true"] .dialkit-text-control { border-color: #ad625a; box-shadow: inset 0 0 0 1px #ad625a; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.consent { max-width: 560px; max-height: 84dvh; overflow: auto; margin: 8vh auto; padding: 2px; }
+.mobile-only { display: none; }
+.sidebar-backdrop { position: fixed; inset: 0; z-index: 490; }
+.sidebar-backdrop .dialkit-button-group, .sidebar-backdrop .dialkit-button { width: 100%; height: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; background: rgb(0 0 0 / .2); }
+.sidebar-backdrop .button-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+:is(.rail-scroll, .pane-scroll, .assistant-body, .audit-list, .audit-detail, .command-results, .command-preview, .context-menu, .consent, .dialkit-select-dropdown, .editable textarea) { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; scrollbar-gutter: stable; overscroll-behavior: contain; }
+:is(.rail-scroll, .pane-scroll, .assistant-body, .audit-list, .audit-detail, .command-results, .command-preview, .context-menu, .consent, .dialkit-select-dropdown, .editable textarea):is(:hover, :focus-within) { scrollbar-color: var(--scroll-thumb-active) transparent; }
+:is(.rail-scroll, .pane-scroll, .assistant-body, .audit-list, .audit-detail, .command-results, .command-preview, .context-menu, .consent, .dialkit-select-dropdown, .editable textarea)::-webkit-scrollbar { width: 8px; height: 8px; }
+:is(.rail-scroll, .pane-scroll, .assistant-body, .audit-list, .audit-detail, .command-results, .command-preview, .context-menu, .consent, .dialkit-select-dropdown, .editable textarea)::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: var(--scroll-thumb-active); background-clip: padding-box; }
+:is(.rail-scroll, .pane-scroll, .assistant-body, .audit-list, .audit-detail, .command-results, .command-preview, .context-menu, .consent, .dialkit-select-dropdown)::-webkit-scrollbar-track { margin-block: 8px; background: transparent; }
+:is(.rail-scroll, .pane-scroll, .assistant-body, .audit-list, .audit-detail)[tabindex="0"]:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
+.pane-scroll { scroll-padding-block: 20px; }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px) scale(.985); } to { opacity: 1; transform: none; } }
+
+/* Split panes adapt to their own width instead of the overall window. */
+.pane-column { container-type: inline-size; }
+@container (max-width: 620px) {
+  .content { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .pane-scroll { padding: 20px 16px 40px; }
+  .content .dialkit-panel-inner { padding: 18px 20px 20px; }
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+  .message-card { padding: 20px 24px 26px; }
+  .toolbar-actions .button-meta { display: none; }
+}
+@container (max-width: 360px) {
+  .pane-scroll { padding: 16px 10px 28px; }
+  .content .dialkit-panel-inner { padding: 16px; border-radius: 18px; }
+  .toolbar-actions .dialkit-button { padding: 4px 6px; }
+  .read-only .dialkit-text-label { flex-basis: 35%; }
+  .record-row .button-meta { display: none; }
+  .message-card { padding: 18px; border-radius: 18px; }
+  .metrics { gap: 16px 10px; }
+  .dialkit-text-control, .dialkit-select-trigger { gap: 8px; }
+  .dialkit-select-trigger { padding-inline: 8px; }
+  .dialkit-select-label { max-width: 40%; }
+  .metric .dialkit-text-input:not([aria-hidden="true"]) { font-size: 18px; letter-spacing: -.025em; }
+}
+@media (min-width: 800px) and (max-width: 1359px) {
+  .workspace:has(> .assistant) { grid-template-columns: calc(var(--sidebar-width) - 8px) minmax(0, 1fr); }
+  .workspace.sidebar-collapsed:has(> .assistant) { grid-template-columns: minmax(0, 1fr); }
+  .assistant { position: fixed; z-index: 550; top: 43px; right: 8px; bottom: 8px; width: var(--assistant-width); margin: 0; border: 1px solid var(--line-strong); box-shadow: var(--shadow-popover); }
+}
+@media (min-width: 800px) {
+  .workspace:not(.sidebar-collapsed) .sidebar-toggle { display: none; }
+}
+@media (max-width: 799px) {
+  .workspace, .workspace:has(> .assistant), .workspace.sidebar-collapsed, .workspace.sidebar-collapsed:has(> .assistant) { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 6px; }
+  .rail { position: fixed; z-index: 500; inset: 6px auto 6px 6px; width: min(280px, calc(100vw - 44px)); padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--shell); box-shadow: 12px 0 50px rgb(0 0 0 / .18); }
+  .rail-header { min-height: 36px; }
+  .rail .dialkit-button { min-height: 38px; }
+  .workspace.sidebar-collapsed > .rail { display: none; }
+  .workbench { gap: 0; }
+  .pane-column:not(:has(.workspace-pane.active-pane)), .workspace-pane:not(.active-pane) { display: none; }
+  .pane-column:has(.workspace-pane.active-pane) { width: 100% !important; flex: 1 1 100%; }
+  .workspace-pane.active-pane { height: 100% !important; flex: 1 1 100%; }
+  .column-resize, .pane-resize, .sidebar-resize, .assistant-resize { display: none; }
+  .mobile-only { display: flex; }
+  .pane-toolbar { gap: 5px; padding: 0 8px; }
+  .toolbar-actions { gap: 2px; }
+  .tab-item { flex-basis: 160px; }
+  .tab-close { opacity: 1; }
+  .assistant { position: fixed; z-index: 550; top: 46px; right: 6px; bottom: 6px; width: min(394px, calc(100vw - 12px)); margin: 0; border: 1px solid var(--line-strong); box-shadow: var(--shadow-popover); }
+  .assistant-body { padding: 12px 16px 20px; }
+  .modal-backdrop { padding: 54px 10px 12px; }
+  .command-dialog { max-height: calc(100dvh - 76px); border-radius: 16px; }
+  .command-dialog.has-preview { width: min(640px, 100%); }
+  .command-preview { display: none; }
+  .command-header { padding: 12px; }
+  .command-results .dialkit-button { min-height: 46px; }
+  .consent { margin: 18px 10px; max-height: calc(100dvh - 36px); }
+  .status-toast { bottom: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+@media (pointer: coarse) {
+  .icon-button .dialkit-button, button.icon-button { width: 32px; height: 32px; min-height: 32px; }
+  .tab-close.icon-button .dialkit-button { width: 28px; height: 28px; min-height: 28px; }
+}
+@media (forced-colors: active) {
+  .dialkit-root, .dialkit-root[data-theme] { --focus: Highlight; --dial-focus-ring: Highlight; }
+  .dialkit-text-control:has(textarea:focus-visible), .dialkit-slider-input:focus { border-color: Highlight; }
+  .dialkit-root button:disabled { color: GrayText; }
+}

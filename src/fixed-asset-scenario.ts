@@ -1,0 +1,32 @@
+import type {Action,Actor,World} from './world.ts';
+
+export type FixedAssetScenarioHooks={perform:(action:Action,actor:Actor)=>any;document:(type:string,name:string,body:string,refs:any)=>any;mail:(message:any)=>any};
+/** Master records establish synthetic identity only. Every amount-bearing
+ * acquisition, inventory movement, payable and asset entry uses domain actions.
+ */
+export function seedFixedAssetScenario(w:World,count:number,random:()=>number,h:FixedAssetScenarioHooks){
+  const controller:Actor={id:'asset-source-controller',role:'controller'},operator:Actor={id:'asset-history-operator',role:'operator'},approver:Actor={id:'asset-history-approver',role:'controller'},perform=(action:Action,actor:Actor=controller)=>h.perform(action,actor);
+  const vendor={id:'asset-equipment-vendor',name:'Equipment Supplier',email:'ap@equipment.supplier.test',verified_bank_account:'verified-asset-equipment-beneficiary'},buyer={id:'asset-existing-buyer',name:'Existing Equipment Buyer',email:'billing@equipment.buyer.test'};
+  w.vendors.push(vendor);w.customers.push(buyer);w.contracts.push({id:'asset-buyer-collection-authority',customer_id:buyer.id,signed:true,currency:'USD',terms:'Existing customer collection authority to the verified operating account through the original derived customer mandate; sale price still requires separate controller disposal terms.'});
+  const buyerDoc=h.document('signed-contract','Existing buyer collection authority',`Customer ${buyer.id} authorizes collections through original mandate mandate-${buyer.id}. This source establishes customer identity and collection route; it does not set any asset sale price or assert cash has arrived.`,{customer_id:buyer.id,contract_id:'asset-buyer-collection-authority'});
+  const policy=perform({type:'record_asset_policy',name:'Internal equipment book depreciation',useful_life_months:36,salvage_bps:1000,external_event_id:'asset-seed-book-policy'}).policy;
+  const authorities:string[]=[],assets:string[]=[],disposals:string[]=[],bills:string[]=[];
+  for(let i=0;i<count;i++){
+    const item={id:`item-asset-equipment-${i+1}`,sku:`EQUIPMENT-${String(i+1).padStart(3,'0')}`,name:['Scanning terminal','Equipment rack','Service workstation'][i%3],currency:'USD',quantity_on_hand:0,inventory_value_minor:0};w.inventoryItems.push(item);
+    const price=(500+Math.floor(random()*4500))*100+((i*17)%100),req=perform({type:'authorize_purchase',vendor_id:vendor.id,lines:[{item_id:item.id,quantity:1,max_unit_price_minor:price}],purpose:`Approved internal ${item.name.toLowerCase()} acquisition`,external_event_id:`asset-seed-purchase-authority-${i}`}).requisition;
+    const requested=perform({type:'create_purchase_order',vendor_id:vendor.id,document_ids:[req.document_id],lines:[{item_id:item.id,quantity:1,unit_price_minor:price}],reason:'Issue purchase order from the source acquisition requisition'},operator),po=perform({type:'decide_approval',approval_id:requested.approval_id,decision:'approve'},approver).purchase_order;
+    const receipt=perform({type:'receive_goods',purchase_order_id:po.id,lines:[{po_line_id:po.lines[0].id,quantity:1}],reference:`ASSET-DELIVERY-${i+1}`,external_event_id:`asset-seed-goods-${i}`}).receipt;
+    const supplier=perform({type:'receive_supplier_invoice',purchase_order_id:po.id,vendor_id:vendor.id,invoice_number:`EQUIPMENT-${i+1}`,lines:[{po_line_id:po.lines[0].id,quantity:1,unit_price_minor:price}],external_event_id:`asset-seed-invoice-${i}`}).supplier_invoice,bill=perform({type:'match_supplier_invoice',supplier_invoice_id:supplier.id},operator).bill;bills.push(bill.id);
+    const authorization=perform({type:'authorize_asset_acquisition',name:`${item.name} ${i+1}`,bill_id:bill.id,policy_id:policy.id,allocations:[{receipt_line_id:receipt.lines[0].id,quantity:1}],external_event_id:`asset-seed-acquisition-${i}`}).authorization;authorities.push(authorization.id);
+    // Every third case leaves physically received stock and unused source
+    // authority for the operator to capitalize. It is not yet an active asset.
+    if(i%3===1)continue;
+    const asset=perform({type:'capitalize_asset',authorization_id:authorization.id},operator).asset;assets.push(asset.id);perform({type:'place_asset_in_service',asset_id:asset.id,in_service_at:w.now,external_event_id:`asset-seed-service-${i}`});
+    if(i%3===2){const disposal=perform({type:'authorize_asset_disposal',asset_id:asset.id,kind:'sale',buyer_id:buyer.id,proceeds_minor:Math.floor(price*0.75),reason:'Binding replacement-program resale terms; request independent approval before reporting physical disposal',external_event_id:`asset-seed-sale-terms-${i}`}).authorization;disposals.push(disposal.id);}
+  }
+  const initial=new Date(w.now),cutoff=new Date(Date.UTC(initial.getUTCFullYear(),initial.getUTCMonth()+3,1,initial.getUTCHours(),initial.getUTCMinutes(),initial.getUTCSeconds(),initial.getUTCMilliseconds()));perform({type:'advance_time',hours:(cutoff.getTime()-initial.getTime())/3_600_000});
+  const previousMonth=new Date(Date.UTC(cutoff.getUTCFullYear(),cutoff.getUTCMonth()-1,1)).toISOString().slice(0,7);
+  w.fixedAssetSources={policy_id:policy.id,buyer_id:buyer.id,buyer_authority_document_id:buyerDoc.id,acquisition_authorization_ids:authorities,asset_ids:assets,disposal_authorization_ids:disposals,bill_ids:bills,through_month:previousMonth};
+  const doc=h.document('fixed-asset-close-brief',`${w.name}: fixed-asset close`,`${count} approved equipment purchases have actual warehouse receipts and matched supplier invoices. ${assets.length} units were capitalized and placed in service; ${count-assets.length} remain inventory with unused capitalization authority. Supplier bills remain payable and are not fictitiously settled. Book policy ${policy.id}: 36 months, 10% salvage, full month following service; complete depreciation through ${previousMonth} from the source records. ${disposals.length} assets have controller binding sale terms for the existing authorized buyer. Those terms still need an operator request and independent controller approval, then a controller physical completion fact before book disposal. Sale creates a real receivable; collection settles separately. No statutory tax depreciation is claimed.`,{...w.fixedAssetSources});
+  w.fixedAssetSources.brief_document_id=doc.id;h.mail({from:'controller@equipment.simulation.test',subject:'Equipment book close: source receipts, depreciation and sale authority',body:doc.body,source_refs:[doc.id,policy.document_id,buyerDoc.id]});
+}

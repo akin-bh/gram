@@ -1,0 +1,14 @@
+import type {World,Action,Actor} from './world.ts';
+type Hooks={perform:(action:Action,actor:Actor)=>any;document:(type:string,name:string,body:string,refs:any)=>any;mail:(message:any)=>any};
+export function seedStatutoryPayrollScenario(w:World,count:number,h:Hooks){
+ const controller={id:'seed-payroll-controller',role:'controller'} as const,perform=(a:Action)=>h.perform(a,controller);
+ const policy=perform({type:'record_statutory_payroll_policy',name:'Federal',tax_year:2026,jurisdiction:'US-federal',pay_frequency:'biweekly',external_event_id:'seed-federal-policy'}).policy;
+ const employees:string[]=[],times:string[]=[],profiles:string[]=[];
+ for(let i=0;i<count;i++){
+  const id=`employee-${i+1}`;const employee=perform({type:'record_employee',employee_id:id,display_name:`Employee ${i+1}`,hourly_rate_minor:2500+i*100,external_event_id:`seed-employee-${i+1}`}).employee;employees.push(employee.id);
+  const profile=perform({type:'record_employee_tax_profile',employee_id:id,tax_year:2026,jurisdiction:'US-federal',as_of_date:'2026-09-30',w4:{form_year:2026,filing_status:i%2?'married_filing_jointly':'single_or_married_filing_separately',step2_checked:false,annual_credits_minor:0,other_income_minor:0,deductions_minor:0,extra_withholding_minor:0},prior_ytd:{social_security_wages_minor:i===0?18400000:0,medicare_wages_minor:i===0?19900000:0,futa_wages_minor:i===0?700000:0},external_event_id:`seed-tax-profile-${i+1}`}).tax_profile;profiles.push(profile.id);
+  times.push(perform({type:'record_payroll_time',employee_id:id,period_start:'2026-10-01',period_end:'2026-10-14',minutes:4800,external_event_id:`seed-time-${i+1}`}).time_record.id);
+ }
+ w.statutoryPayrollSources={policy_id:policy.id,employee_ids:employees,time_record_ids:times,tax_profile_ids:profiles};
+ const doc=h.document('federal-payroll-brief','Federal payroll',`Calculate completed biweekly regular wages from the approved time and employment records. Each employee has an explicit Form W-4 and opening federal wage history through September 30. The first employee approaches the Social Security cap and Additional Medicare threshold; use the actual distinct taxable wage histories, not a flat tax percentage. All current gross wages are federal taxable wages. Request independent wage approval; after actual settlement request independent tax deposit approval. Preserve component calculations and payslips. Source opening YTD is historical evidence outside this opening trial balance, not a new expense. No state or local taxes, FUTA credit, tax return filing or external bank execution is included.`,w.statutoryPayrollSources);w.statutoryPayrollSources.brief_document_id=doc.id;h.mail({from:'controller@simulation.test',subject:'Federal payroll',body:doc.body,source_refs:[doc.id,policy.id,...profiles.slice(0,98)]});
+}

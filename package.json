@@ -1,0 +1,32 @@
+{
+  "name": "gram",
+  "version": "0.1.0",
+  "description": "A local, persistent enterprise-finance simulation for an autonomous Claude agent and a human controller.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "build": "bun src/build-ui.ts",
+    "start": "bun run build && bun src/server.ts",
+    "dev": "bun run build && bun --watch src/server.ts",
+    "test": "bun test src test",
+    "check": "bun x --bun tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.310",
+    "dialkit": "2.0.2",
+    "emulate": "0.12.2",
+    "marked": "^18.1.1",
+    "postal-mime": "4.1.4",
+    "thinking-orbs": "0.3.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "bun@1.4.2"
+}
