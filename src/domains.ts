@@ -2,5 +2,6 @@
  * system of work; import it wherever a domain is looked up by kind. */
 import './cash-application.ts';
 import './tour-settlements.ts';
+import './calhacks.ts';
 export {allDomains,domainByKind,domainFor,seatKinds} from './seat-domain.ts';
 export type {SeatDomain} from './seat-domain.ts';

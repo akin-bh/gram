@@ -157,6 +157,21 @@ export function renderWork(content, ctx) {
   const pending = (w.bankFeed || []).filter(row => !row.delivered_at);
   feed.text('Next sync', pending.length ? pending.length + ' lines scheduled · next ' + when(pending[0].arrives_at) : 'No scheduled lines');
   if (pending.length) feed.buttons([['Advance to the next sync', () => ctx.act(pending[0].arrives_at > w.now ? { type: 'advance_to', at: pending[0].arrives_at } : { type: 'advance_time', hours: 1 })]]);
+  if (w.kind === 'calhacks') {
+    const pay = ctx.draft('sponsor-payment', { payer: '', amount: '', memo: '', channel: 'wire' }), payForm = feed.folder('Record a sponsor payment', { open: false });
+    payForm.text('Payer (as the bank shows it)', pay.payer, value => pay.payer = value, 'LATTICE ROBOTICS INC');
+    payForm.text('Amount received (USD)', pay.amount, value => pay.amount = value, '19965.00');
+    payForm.text('Memo', pay.memo, value => pay.memo = value, 'SI-1302 SPONSORSHIP');
+    payForm.select('Channel', pay.channel, ['wire', 'ach', 'card', 'check'].map(value => ({ value, label: value.toUpperCase() })), value => pay.channel = value);
+    payForm.buttons([['Record payment', async () => {
+      const cents = Math.round(Number(pay.amount) * 100);
+      if (!/^\d+(\.\d{1,2})?$/.test(String(pay.amount).trim()) || cents <= 0) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: 'Amount received (USD)' });
+      const reference = 'WF-' + String(Date.now()).slice(-8);
+      await ctx.act({ type: 'record_sponsor_payment', bank_reference: reference, amount_minor: cents, channel: pay.channel, payer_name: pay.payer.trim(), memo: pay.memo.trim(), external_event_id: 'console:' + reference });
+      Object.assign(pay, { payer: '', amount: '', memo: '' });
+    }]]);
+    payForm.text('Scoring it', 'An answer key for this seat is recorded through the API (record_case_expectation) or `bun run bench:cash --kind=calhacks --judge-case=cases.json`; the seat never sees it.').host.classList.add('prose');
+  }
   if (w.kind === 'tour-settlements') {
     const dep = ctx.draft('venue-deposit', { payer: '', amount: '', memo: '', currency: 'AUD', original: '', rate: '' }), depositForm = feed.folder('Record a venue deposit', { open: false });
     depositForm.text('Payer (as the bank shows it)', dep.payer, value => dep.payer = value, 'WEST COAST ARENA CO');
