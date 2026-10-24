@@ -1,6 +1,6 @@
 /** Exact bounded monetary arithmetic. Rates are quote major units per base
  * major unit; persisted proofs use decimal strings, never JSON BigInts. */
-export const currencyMinorUnits = Object.freeze({USD:2,EUR:2,GBP:2,JPY:0,KWD:3,AUD:2,NZD:2});
+export const currencyMinorUnits = Object.freeze({USD:2,EUR:2,GBP:2,JPY:0,KWD:3,AUD:2,NZD:2,CAD:2});
 export type Currency = keyof typeof currencyMinorUnits;
 export type Rational = {numerator:string;denominator:string};
 export type FxRate = Rational & {base_currency:Currency;quote_currency:Currency};

@@ -101,7 +101,7 @@ test('the tour seat posts the same cards in its own currency, and "@gram why" an
     const posted=f.calls.filter(row=>row.method==='chat.postMessage');
     expect(posted.length).toBe(1);
     const text=JSON.stringify(posted[0]!.body.blocks);
-    expect(text).toContain('A$');expect(text).toContain('Hold');expect(text).toContain('Tour Settlements Officer');expect(text).not.toContain('invoice_id');expect(text).toContain('the ledger');
+    expect(text).toContain('$');expect(text).toContain('Hold');expect(text).toContain('Settlement Manager');expect(text).not.toContain('invoice_id');expect(text).toContain('the ledger');
     // A mention in the channel is answered in its thread from the append-only log; ids match however they are typed.
     const mention=(text:string,extra:any={})=>f.slack.handle({type:'events_api',envelope_id:crypto.randomUUID(),payload:{team_id:'T0KESTREL',event_id:`Ev${crypto.randomUUID()}`,event:{type:'app_mention',channel:'C0AR',user:'U0DANA',text,ts:'2000',...extra}}});
     await mention(`<@U0BOT> why ${item.id.toLowerCase()}?`);

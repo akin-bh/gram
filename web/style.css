@@ -645,3 +645,18 @@ body[data-resize-axis="vertical"], body[data-resize-axis="vertical"] * { cursor:
   .dialkit-text-control:has(textarea:focus-visible), .dialkit-slider-input:focus { border-color: Highlight; }
   .dialkit-root button:disabled { color: GrayText; }
 }
+
+/* Books: Fava fills the pane. Its frames live in a fixed layer outside the redrawn tree
+   (web/books-view.js), laid over .books-slot, under the console's menus, dialogs and drawers. */
+.pane-scroll:has(> .books-content) { overflow: hidden; padding: 16px; }
+.content.books-content { display: flex; flex-direction: column; align-items: stretch; gap: 12px; max-width: none; height: 100%; }
+.books-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.books-summary { flex: 1 1 360px; min-width: 0; }
+.books-summary textarea { white-space: pre-wrap; }
+.books-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.books-slot { flex: 1 1 auto; min-height: 360px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.books-empty { display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--muted); }
+.books-frame-layer { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+.books-frame { position: fixed; border: 0; border-radius: 14px; background: transparent; pointer-events: auto; }
+.books-frame[hidden] { display: none; }
+body.is-resizing .books-frame { pointer-events: none; }

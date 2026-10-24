@@ -173,17 +173,17 @@ export function renderWork(content, ctx) {
     payForm.text('Scoring it', 'An answer key for this seat is recorded through the API (record_case_expectation) or `bun run bench:cash --kind=calhacks --judge-case=cases.json`; the seat never sees it.').host.classList.add('prose');
   }
   if (w.kind === 'tour-settlements') {
-    const dep = ctx.draft('venue-deposit', { payer: '', amount: '', memo: '', currency: 'AUD', original: '', rate: '' }), depositForm = feed.folder('Record a venue deposit', { open: false });
-    depositForm.text('Payer (as the bank shows it)', dep.payer, value => dep.payer = value, 'WEST COAST ARENA CO');
-    depositForm.text('Amount received (AUD)', dep.amount, value => dep.amount = value, '1536480.00');
-    depositForm.text('Memo', dep.memo, value => dep.memo = value, 'SETTLEMENT SH-3006 PERTH');
-    depositForm.select('Settled in', dep.currency, [{ value: 'AUD', label: 'AUD' }, { value: 'NZD', label: 'NZD, converted by the bank' }], value => { dep.currency = value; ctx.rerender(); });
-    if (dep.currency === 'NZD') { depositForm.text('NZD amount', dep.original, value => dep.original = value, '1575000.00'); depositForm.text('Bank rate (AUD per NZD)', dep.rate, value => dep.rate = value, '0.9225'); }
+    const dep = ctx.draft('venue-deposit', { payer: '', amount: '', memo: '', currency: 'USD', original: '', rate: '' }), depositForm = feed.folder('Record a venue deposit', { open: false });
+    depositForm.text('Payer (as the bank shows it)', dep.payer, value => dep.payer = value, 'DELAWARE RIVER VENUES LLC');
+    depositForm.text('Amount received (USD)', dep.amount, value => dep.amount = value, '1536480.00');
+    depositForm.text('Memo', dep.memo, value => dep.memo = value, 'SETTLEMENT SH-3006 PHILADELPHIA');
+    depositForm.select('Settled in', dep.currency, [{ value: 'USD', label: 'USD' }, { value: 'CAD', label: 'CAD, converted by the bank' }], value => { dep.currency = value; ctx.rerender(); });
+    if (dep.currency === 'CAD') { depositForm.text('CAD amount', dep.original, value => dep.original = value, '1575000.00'); depositForm.text('Bank rate (USD per CAD)', dep.rate, value => dep.rate = value, '0.7325'); }
     depositForm.buttons([['Record deposit', async () => {
-      const cents = text => { const value = Math.round(Number(text) * 100); if (!/^\d+(\.\d{1,2})?$/.test(String(text).trim()) || value <= 0) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: 'Amount received (AUD)' }); return value; };
-      const amount = cents(dep.amount), reference = 'ANZ-' + String(Date.now()).slice(-8);
-      const fx = dep.currency === 'NZD' ? { original_currency: 'NZD', original_amount_minor: cents(dep.original), fx_rate: Number(dep.rate) } : {};
-      if (dep.currency === 'NZD' && !(fx.fx_rate > 0)) throw Object.assign(Error('Enter the bank rate.'), { field: 'Bank rate (AUD per NZD)' });
+      const cents = text => { const value = Math.round(Number(text) * 100); if (!/^\d+(\.\d{1,2})?$/.test(String(text).trim()) || value <= 0) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: 'Amount received (USD)' }); return value; };
+      const amount = cents(dep.amount), reference = 'WIRE-' + String(Date.now()).slice(-8);
+      const fx = dep.currency === 'CAD' ? { original_currency: 'CAD', original_amount_minor: cents(dep.original), fx_rate: Number(dep.rate) } : {};
+      if (dep.currency === 'CAD' && !(fx.fx_rate > 0)) throw Object.assign(Error('Enter the bank rate.'), { field: 'Bank rate (USD per CAD)' });
       await ctx.act({ type: 'record_venue_deposit', bank_reference: reference, amount_minor: amount, payer_name: dep.payer.trim(), memo: dep.memo.trim(), ...fx, external_event_id: 'console:' + reference });
       Object.assign(dep, { payer: '', amount: '', memo: '', original: '', rate: '' });
     }]]);

@@ -6,6 +6,7 @@ import { renderAuditView, renderAuditRecord, cachedAuditEvent, invalidateAudit }
 import { describeAuditEvent } from './audit-tree.js';
 import { mountAgentStatus, describeAgentStatus } from './agent-status.js';
 import { renderWork, renderWorkItem } from './work-view.js';
+import { renderBooks, syncBooksFrames } from './books-view.js';
 import 'dialkit/vanilla/styles.css';
 import './style.css';
 
@@ -83,15 +84,15 @@ const money = cents => new Intl.NumberFormat('en-US', { style: 'currency', curre
 const list = value => Array.isArray(value) ? value : [];
 const root = new Surface(document.querySelector('#app'));
 const state = { boot: null, snapshot: null, world: '', view: 'overview', busy: false, notice: 'Loading…', draft: {}, finance: 'payments', recordSystem: 'gmail', recordFeed: 'message', records: null, detail: null, page: {}, search: {}, compose: null, generated: null, files: [] };
-const views = ['overview', 'work', 'connections', 'mailbox', 'finance', 'procurement', 'sources', 'agent', 'delivery', 'audit', 'create', 'documents', 'favorites', 'settings'];
-const labels = { overview: 'Overview', work: 'Work', connections: 'Connections', mailbox: 'Inbox', finance: 'Finance', procurement: 'Procurement', sources: 'Sources', agent: 'Agent', delivery: 'Delivery', audit: 'Audit', create: 'New company', documents: 'Files', favorites: 'Favorites', settings: 'Settings' };
+const views = ['overview', 'work', 'connections', 'mailbox', 'finance', 'books', 'procurement', 'sources', 'agent', 'delivery', 'audit', 'create', 'documents', 'favorites', 'settings'];
+const labels = { overview: 'Overview', work: 'Work', connections: 'Connections', mailbox: 'Inbox', finance: 'Finance', books: 'Books', procurement: 'Procurement', sources: 'Sources', agent: 'Agent', delivery: 'Delivery', audit: 'Audit', create: 'New company', documents: 'Files', favorites: 'Favorites', settings: 'Settings' };
 let rail, content, statusControl, detailSurface, resultControl;
 const workspace = new WorkspaceStore();
 const tabState = new Map(), transientRecords = new Map();
 const tabStripScroll = new Map();
 const scrollPositions = new Map(), assistantViews = new Map();
 const agentStatusViews = new Set(), stoppingRuns = new Set();
-const uiKeys = ['draft', 'finance', 'recordSystem', 'recordFeed', 'page', 'search', 'compose', 'generated', 'mailFilter', 'scroll'];
+const uiKeys = ['draft', 'finance', 'recordSystem', 'recordFeed', 'page', 'search', 'compose', 'generated', 'mailFilter', 'scroll', 'booksPath'];
 const runtimeKeys = [...uiKeys, 'files', 'records', 'detail'];
 let activeContext = null, rendering = false, menuSurface = null, searchSurface = null, toastTimer, pendingFocus = null, focusSelectedTab = false, deferredRender = false, forceFocus = false;
 const narrowScreen = matchMedia('(max-width: 799px)');
@@ -384,7 +385,7 @@ function render() {
         if (!state.snapshot && !['create', 'settings'].includes(tab.view)) renderStart();
         else if (tab.kind === 'record') renderRecord(tab);
         else if (tab.kind === 'compose') { state.compose ||= 'send_email'; const composer = content.folder('New message', { root: true, wide: true }); composer.host.parentElement.classList.add('composer'); renderMailForm(composer); }
-        else ({ overview: renderOverview, work: renderWorkView, connections: renderConnections, mailbox: renderMailbox, finance: renderFinance, procurement: renderProcurement, sources: renderSources, agent: renderAgent, delivery: renderDelivery, audit: renderAudit, create: renderCreate, documents: renderDocuments, favorites: renderFavorites, settings: renderSettings })[tab.view]?.() ?? (tab.view.startsWith('start-') ? renderStart() : undefined);
+        else ({ overview: renderOverview, work: renderWorkView, connections: renderConnections, mailbox: renderMailbox, finance: renderFinance, books: renderBooksView, procurement: renderProcurement, sources: renderSources, agent: renderAgent, delivery: renderDelivery, audit: renderAudit, create: renderCreate, documents: renderDocuments, favorites: renderFavorites, settings: renderSettings })[tab.view]?.() ?? (tab.view.startsWith('start-') ? renderStart() : undefined);
       } catch (error) { const errorCard = content.folder('Unable to open view', { root: true }); errorCard.text('Error', error.message); errorCard.buttons([['Retry', refresh]]); }
       scroller.host.scrollTop = scrolls.get(tab.id) || tab.ui?.scroll || 0;
       scroller.host.addEventListener('scroll', () => { const scroll = scroller.host.scrollTop, runtime = tabState.get(context.world + ':' + tab.id); if (runtime) runtime.scroll = scroll; if (activeContext?.tab === tab.id) state.scroll = scroll; workspace.updateTab(context.world, tab.id, { ui: { scroll } }); }, { passive: true });
@@ -412,6 +413,8 @@ function render() {
   document.title = (currentTab()?.title || 'Workspace') + ' · gram';
   const url = new URL(location.href); url.searchParams.set('view', state.view); url.searchParams.set('tab', currentTab()?.id || ''); if (state.world) url.searchParams.set('world', state.world); history.replaceState({}, '', url);
   saveContext();
+  // Fava frames sit outside the redrawn tree; lay them over this render's slots now and after layout settles.
+  syncBooksFrames(); requestAnimationFrame(syncBooksFrames);
   } finally { rendering = false; if (!state.busy) restoreFocus(pendingFocus); }
 }
 function toggleSidebar() {
@@ -447,7 +450,7 @@ function renderSidebar() {
   const scroll = child(rail, 'rail-scroll');
   const nav = child(scroll, 'rail-nav');
   const selected = currentTab();
-  for (const view of (world().seat ? ['work', 'mailbox', 'finance', 'audit'] : ['overview', 'mailbox', 'documents', 'finance', 'procurement'])) {
+  for (const view of (world().seat ? ['work', 'mailbox', 'finance', 'books', 'audit'] : ['overview', 'mailbox', 'documents', 'finance', 'books', 'procurement'])) {
     const count = view === 'work' ? records('workItems').filter(item => ['proposed', 'needs_info', 'escalated'].includes(item.state)).length || undefined : view === 'mailbox' ? records('messages').length : view === 'documents' ? records('documents').length : view === 'favorites' ? space().favorites.length : undefined;
     nav.action(labels[view], () => go(view), { icon: view === 'documents' ? 'files' : view === 'favorites' ? 'star' : view, active: selected?.view === view && selected.kind === 'view', meta: count, disabled: !state.world && view !== 'overview' });
   }
@@ -1289,6 +1292,12 @@ function workContext() {
   };
 }
 function renderWorkView() { renderWork(content, workContext()); }
+function renderBooksView() {
+  // The Fava frame reports where the controller navigated; keep it on this tab like its scroll position.
+  const context = activeContext;
+  renderBooks(content, { child, api, path, download, world, worldId: () => state.world, tabId: () => context.tab, rerender: () => { if (state.busy || rendering) deferredRender = true; else render(); },
+    savedPath: () => state.booksPath, savePath: booksPath => { const runtime = tabState.get(context.world + ':' + context.tab); if (runtime) runtime.booksPath = booksPath; if (activeContext?.tab === context.tab) state.booksPath = booksPath; workspace.updateTab(context.world, context.tab, { ui: { booksPath } }); } });
+}
 function renderAgent() {
   const pane = content.folder('Task', { root: true, wide: true });
   const config = state.boot.agent;

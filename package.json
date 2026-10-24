@@ -12,6 +12,7 @@
     "build": "bun src/build-ui.ts",
     "start": "bun run build && bun src/server.ts",
     "dev": "bun run build && bun --watch src/server.ts",
+    "fava:setup": "bun src/fava-setup.ts",
     "test": "bun test src test",
     "check": "bun x --bun tsc --noEmit",
     "bench:baseline": "bun src/bench-cash.ts --scripted",

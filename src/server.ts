@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname, basename } from 'node:path';
 import { defineEmulator, createEmulator } from 'emulate';
 import { Store, ServiceError, hash, secret, redact } from './store.ts';
 import { OAuth } from './oauth.ts';
@@ -23,6 +23,9 @@ import {domainByKind,domainFor,seatKinds} from './domains.ts';
 import {SlackBridge,loadSlackConfig} from './slack.ts';
 import {argonPhrase,colleagueTick} from './colleague.ts';
 import type {SlackDeps} from './slack.ts';
+import {Books} from './books.ts';
+import {FavaHost,favaSocket,locateFava} from './fava.ts';
+import type {FavaConfig} from './fava.ts';
 
 const root = resolve(import.meta.dir, '..');
 const json = (data: any, status = 200, headers: Record<string, string> = {}) => Response.json(data, { status, headers });
@@ -46,7 +49,9 @@ export type ServiceOptions = { database?: string; baseUrl?: string; agentEnabled
   /** false disables Slack; an object injects configuration and transports for tests. */
   slack?: false | (Partial<Pick<SlackDeps,'transport'|'socket'|'config'>> & { connect?: boolean });
   /** Test seam for simulated colleagues' wording; decisions always come from the case file. */
-  colleaguePhrase?: Parameters<typeof colleagueTick>[3] };
+  colleaguePhrase?: Parameters<typeof colleagueTick>[3];
+  /** Each company's books as a Beancount file in `dir`, and Fava serving them read-only under /fava/. */
+  books?: { dir: string; fava?: FavaConfig; favaReason?: string } };
 type RunSpec={kind:'instruction';instruction:string;actor:string;requestId?:string}|{kind:'seat';mode:SeatMode;items:string[];reason:string;trigger:string;actor:string;requestId?:string};
 export async function createService(options: ServiceOptions = {}) {
   const baseUrl = options.baseUrl ?? 'http://127.0.0.1:24300';
@@ -54,6 +59,38 @@ export async function createService(options: ServiceOptions = {}) {
   const sessionCookie = `fw_session_${new URL(baseUrl).port || '80'}`;
   const store = new Store(options.database ?? resolve(root, 'data/worlds.sqlite'));
   const oauth = new OAuth(store, baseUrl, systemCatalog);
+  const books = options.books ? new Books(options.books.dir) : undefined;
+  const fava = books && options.books?.fava ? new FavaHost(options.books.fava, (type, data) => store.audit('_service', type, data, 'fava')) : undefined;
+  /** The books follow committed state: rewritten after each commit, never inside a transaction that could still roll back. */
+  function exportBooks(id: string) {
+    if (!books) return;
+    try { return books.write(store.world(id)); }
+    catch (error) { store.audit(id, 'books.export_failed', { error: String(error) }); }
+  }
+  const pendingBooks = new Set<string>();
+  const queueBooks = (id: string) => { if (!books || pendingBooks.has(id)) return; pendingBooks.add(id); queueMicrotask(() => { pendingBooks.delete(id); exportBooks(id); }); };
+  if (books) for (const { id } of store.worlds()) exportBooks(id);
+  fava?.start();
+  async function booksStatus(id: string) {
+    if (!books) return { available: false, reason: 'Books export is off for this instance.' };
+    const written = books.status(id) ?? exportBooks(id);
+    if (!written) return { available: false, reason: 'The books could not be exported; see the audit for books.export_failed.' };
+    const { sha256, journals, accounts, through, written_at } = written;
+    const result: any = { available: true, read_only: true, file: basename(books.file(id)), journals, accounts, through, sha256, written_at, download: `/api/worlds/${id}/books.beancount`,
+      fava: { state: 'unavailable', reason: options.books?.favaReason ?? 'Fava is not configured for this instance.' } };
+    if (fava) { const answering = await fava.ready(8000); result.fava = fava.status(); if (!answering) return result; }
+    if (fava) {
+      try {
+        // Fava redirects a company's root to its ledger slug and default report.
+        const index = await fava.request(`/fava/${id}/`), location = index.headers.get('location') ?? '', slug = location.match(/^\/fava\/[^/]+\/([^/]+)\//)?.[1];
+        if (slug) {
+          const errors = await fava.request(`/fava/${id}/${slug}/api/errors`), data = errors.ok ? ((await errors.json()) as any).data ?? [] : null;
+          Object.assign(result.fava, { url: `/fava/${id}/${slug}/`, slug, errors: data ? data.length : null, error_messages: data ? data.slice(0, 5).map((error: any) => error.message) : [] });
+        }
+      } catch (error) { Object.assign(result.fava, { state: 'unavailable', reason: `Fava did not answer: ${String(error)}` }); }
+    }
+    return result;
+  }
   const hooks = new Webhooks(store, { baseUrl, allowedPorts: options.webhookPorts });
   let deliveryTimer: ReturnType<typeof setInterval> | undefined;
   const interval = options.deliveryIntervalMs ?? 1000;
@@ -114,7 +151,7 @@ export async function createService(options: ServiceOptions = {}) {
     }
   }
   function recordAction(world:any,input:any,applied:ReturnType<typeof applyAction>,actor:Actor,requestId:string){
-    store.save(world);
+    store.save(world);queueBooks(world.id);
     for(const event of applied.events)store.audit(world.id,event.type,event,actor.id,requestId);
     hooks.enqueue(world.id,applied.events,{requestId,actor:actor.id,revision:world.revision});
     store.audit(world.id,'action.completed',{action:input,result:applied.result,revision:world.revision,run_id:actor.runId},actor.id,requestId);
@@ -281,6 +318,20 @@ export async function createService(options: ServiceOptions = {}) {
       if (route === 'token' && method === 'POST') return json(oauth.token(system, await body(request)));
       if (route === 'revoke' && method === 'POST') return json(oauth.revokeToken(system, await body(request)));
     }
+    if (parts[0] === 'fava') {
+      // Fava has no login of its own; it is reachable only here, behind the controller session.
+      requireController(actor);
+      const id = parts[1] ?? ''; store.world(id);
+      if (!['GET', 'HEAD'].includes(method)) throw new ServiceError(405, 'books_read_only', 'The books are read-only in Fava. gram\'s gateway posts every change; work it in gram.');
+      if (!fava) throw new ServiceError(503, 'fava_unavailable', options.books?.favaReason ?? 'Fava is not configured for this instance.');
+      if (!books!.status(id)) exportBooks(id);
+      if (!await fava.ready()) throw new ServiceError(503, 'fava_unavailable', fava.status().reason ?? 'Fava is starting; try again in a moment.');
+      const headers = new Headers({ 'Accept-Encoding': 'identity' });
+      for (const name of ['accept', 'accept-language', 'if-none-match', 'if-modified-since', 'range']) { const value = request.headers.get(name); if (value) headers.set(name, value); }
+      const upstream = await fava.request(path + url.search, { method, headers }), out = new Headers();
+      for (const [name, value] of upstream.headers) if (!['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive', 'set-cookie'].includes(name)) out.set(name, value);
+      return new Response(method === 'HEAD' ? null : upstream.body, { status: upstream.status, headers: out });
+    }
     if (path === '/api/bootstrap' && method === 'GET') {
       requireController(actor);
       return json({ worlds: store.worlds().map(({ id, name, kind, now, revision }) => ({ id, name, kind, now, revision })), scenarios: scenarioCatalog, seats: seatKinds(), systems: systemCatalog, agent: config(),generator:generationConfig(), slack: slack ? { available: true, ...slack.status() } : { available: false, reason: slackSetup.reason } });
@@ -291,6 +342,7 @@ export async function createService(options: ServiceOptions = {}) {
       const world = createWorld(input, 'world-' + crypto.randomUUID()),creator=actor.id;
       store.transaction(() => { store.save(world); store.audit(world.id, 'world.created', { scenario: input, summary: summarize(world) }, creator, requestId); });
       if (world.seat) seatWorlds.add(world.id);
+      exportBooks(world.id);
       return json(snapshot(world.id), 201);
     }
     if (path === '/api/generate' && method === 'POST') {
@@ -402,6 +454,12 @@ export async function createService(options: ServiceOptions = {}) {
         requireController(actor); let after = 0, rows: any[] = [], page;
         do { page = store.events(id, after, 1000); rows.push(...page); after = page.at(-1)?.seq ?? after; } while (page.length === 1000);
         return new Response(rows.map(r => JSON.stringify(r)).join('\n') + '\n', { headers: { 'Content-Type': 'application/x-ndjson', 'Content-Disposition': `attachment; filename="${id}-audit.jsonl"` } });
+      }
+      if (route === 'books' && method === 'GET') { requireController(actor); return json(await booksStatus(id)); }
+      if (route === 'books.beancount' && method === 'GET') {
+        requireController(actor); if (!books) throw new ServiceError(404, 'books_unavailable', 'Books export is off for this instance.');
+        const written = books.status(id) ?? exportBooks(id); if (!written) throw new ServiceError(500, 'books_export_failed');
+        return new Response(Bun.file(books.file(id)), { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${id}.beancount"` } });
       }
       if (route.startsWith('work') || route === 'why') {
         if (!world.seat) throw new ServiceError(404, 'no_seat', 'This company has no autonomous seat.');
@@ -530,7 +588,8 @@ export async function createService(options: ServiceOptions = {}) {
       response = json({ error: { code: error.code ?? 'internal_error', message: status === 500 ? 'Internal service error; inspect the local audit.' : error.message }, request_id: requestId }, status);
       if (status === 500) store.audit(world, 'service.error', { name: error.name, message: String(error.message) }, actor?.id, requestId);
     }
-    if (!['/', '/app.js', '/app.css', '/health'].includes(url.pathname)) {
+    // Fava's pages poll for changes every few seconds; reads of the read-only books are not audited.
+    if (!['/', '/app.js', '/app.css', '/health'].includes(url.pathname) && !url.pathname.startsWith('/fava/')) {
       const query = Object.fromEntries(url.searchParams);
       let responseBody:any=url.pathname.includes('/audit')?{audit_read:true}:response.headers.get('content-type')?.includes('application/json')?await response.clone().json().catch(()=>null):{content_type:response.headers.get('content-type')};
       if(url.pathname.startsWith('/providers/')&&!response.headers.get('content-type')?.includes('application/json')){const bytes=Buffer.from(await response.clone().arrayBuffer());responseBody={...responseBody,byte_length:bytes.length,sha256:hash(bytes),etag:response.headers.get('etag')};}
@@ -538,15 +597,17 @@ export async function createService(options: ServiceOptions = {}) {
       store.audit(world, 'http.request', { method: request.method, path: url.pathname, run_id: actor?.runId, query, body: requestBody, status: response.status, response: responseBody, duration_ms: Math.round(performance.now() - started) }, actor?.id ?? 'anonymous', requestId);
     }
     const headers = new Headers(response.headers);
-    headers.set('X-Request-Id', requestId); headers.set('Cache-Control', 'no-store'); headers.set('X-Content-Type-Options', 'nosniff'); headers.set('Referrer-Policy', 'same-origin'); headers.set('X-Frame-Options', 'DENY');
-    headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    // Fava pages are framed by the console, on this origin only. Its static files carry an mtime in the URL.
+    const favaPage = url.pathname.startsWith('/fava/') && response.status < 400, favaStatic = favaPage && /^\/fava\/[^/]+\/static\//.test(url.pathname);
+    headers.set('X-Request-Id', requestId); headers.set('Cache-Control', favaStatic ? 'private, max-age=86400' : 'no-store'); headers.set('X-Content-Type-Options', 'nosniff'); headers.set('Referrer-Policy', 'same-origin'); headers.set('X-Frame-Options', favaPage ? 'SAMEORIGIN' : 'DENY');
+    headers.set('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors ${favaPage ? "'self'" : "'none'"}; base-uri 'none'; form-action 'self'`);
     if (response.status === 429 || response.status === 503) headers.set('Retry-After', '5');
     return new Response(response.body, { status: response.status, headers });
   }
   const definition = defineEmulator({ name: 'finance-world', state: () => ({ schema_version: 1 }), setup({ app }) { app.use('*', c => handler(c.req.raw)); } });
   const runtime = await createEmulator({ service: definition, listen: false, inspector: false, baseUrl });
   const abortWork = () => { if (deliveryTimer) clearInterval(deliveryTimer); if (seatTimer) clearInterval(seatTimer); slack?.stop(); for (const w of workers.values()) w.abort.abort(); for (const a of generations.values()) a.abort.abort(); };
-  return { fetch: runtime.fetch.bind(runtime), store, oauth, hooks, baseUrl, abortWork, seatTick, workCommand, seatStatus, launchRun, slack, async close() { abortWork(); await hooks.close(); await Promise.allSettled([...workers.values(),...generations.values()].map(w => w.promise)); await runtime.close(); store.close(); } };
+  return { fetch: runtime.fetch.bind(runtime), store, oauth, hooks, baseUrl, abortWork, seatTick, workCommand, seatStatus, launchRun, slack, books, fava, async close() { abortWork(); await fava?.stop(); await hooks.close(); await Promise.allSettled([...workers.values(),...generations.values()].map(w => w.promise)); await runtime.close(); store.close(); } };
 }
 
 export async function startServer(options: ServiceOptions & { port?: number } = {}) {
@@ -579,8 +640,12 @@ if (import.meta.main) {
   const webhookPorts = process.env.FINANCE_WORLD_WEBHOOK_PORTS?.split(',').map(p => Number(p.trim()));
   // Seat runs per company per hour: a guard against a looping queue. The default suits a deployment; a demo machine raises it.
   const maxSeatRunsPerHour = Number(process.env.FINANCE_WORLD_SEAT_RUNS_PER_HOUR) > 0 ? Number(process.env.FINANCE_WORLD_SEAT_RUNS_PER_HOUR) : undefined;
-  const service = await startServer({ database: process.env.FINANCE_WORLD_DB, webhookPorts, ...(maxSeatRunsPerHour ? { maxSeatRunsPerHour } : {}) });
-  console.log(JSON.stringify({ service: 'finance-world', url: service.baseUrl, synthetic: true, agent: loadAgentConfig() }));
+  // Each database keeps its own books directory; Fava serves them if it is installed (bun run fava:setup).
+  const database = resolve(process.env.FINANCE_WORLD_DB ?? resolve(root, 'data/worlds.sqlite')), port = Number(process.env.FINANCE_WORLD_PORT ?? 24300);
+  const located = locateFava(), booksDir = resolve(dirname(database), 'books', basename(database).replace(/\.sqlite$/, ''));
+  const books = { dir: booksDir, ...(located.python ? { fava: { python: located.python, socket: favaSocket(port), ledgers: booksDir } } : { favaReason: located.reason }) };
+  const service = await startServer({ database, port, webhookPorts, books, ...(maxSeatRunsPerHour ? { maxSeatRunsPerHour } : {}) });
+  console.log(JSON.stringify({ service: 'finance-world', url: service.baseUrl, synthetic: true, agent: loadAgentConfig(), books: { dir: booksDir, fava: located.python ? 'starting' : located.reason } }));
   let stopping = false;
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { if (!stopping) { stopping = true; void service.close(); } });
 }

@@ -16,14 +16,14 @@ const caseItem=(w:World,reference:string)=>tourDomain.caseItem(w,w.tourCaseKey.f
 const POLICIES=[
   {rule:{kind:'deposit_settles_show'},title:'A deposit equal to the statement net settles the show'},
   {rule:{kind:'multi_show_deposit'},title:'One deposit for several shows is split across them'},
-  {rule:{kind:'venue_alias',payer_name:'MELB ARENA OPERATIONS PTY LTD',venue_ids:['VEN-MEL']},title:'Melbourne arena pays under its operating company name'},
-  {rule:{kind:'merchant_fee_bound',venue_ids:['VEN-MEL','VEN-SYD','VEN-BNE','VEN-PER','VEN-ADL','VEN-AKL'],max_bps:180},title:'Merchant fees up to 1.80% of gross'},
-  {rule:{kind:'music_licence_rate',rate_bps:220,tolerance_minor:100},title:'Music licence at 2.20% of gross'},
-  {rule:{kind:'advance_recoupment',venue_ids:['VEN-MEL']},title:'Melbourne recoups its ticketing advance on settlements'},
-  {rule:{kind:'fx_tolerance',max_minor:1_000_000},title:'FX differences up to A$10,000 on NZD settlements'},
+  {rule:{kind:'venue_alias',payer_name:'SOUTHLAND ARENA OPERATIONS LLC',venue_ids:['VEN-LA']},title:'Los Angeles arena pays under its operating company name'},
+  {rule:{kind:'merchant_fee_bound',venue_ids:['VEN-LA','VEN-CHI','VEN-LV','VEN-PHL','VEN-ATX','VEN-TOR'],max_bps:180},title:'Merchant fees up to 1.80% of gross'},
+  {rule:{kind:'music_licence_rate',rate_bps:50,tolerance_minor:100},title:'Performing-rights fee at 0.50% of gross'},
+  {rule:{kind:'advance_recoupment',venue_ids:['VEN-LA']},title:'Los Angeles recoups its ticketing advance on settlements'},
+  {rule:{kind:'fx_tolerance',max_minor:1_000_000},title:'FX differences up to $10,000 on CAD settlements'},
   {rule:{kind:'recognize_on_performance'},title:'Recognize revenue when a performed show settles'},
   {rule:{kind:'invoice_within_limit'},title:'Approve invoices within the approver\'s limit with a document on file'},
-  {rule:{kind:'catering_recharge_bound',venue_ids:['VEN-MEL','VEN-BNE'],max_minor:2_500_000},title:'Catering recharges up to A$25,000'},
+  {rule:{kind:'catering_recharge_bound',venue_ids:['VEN-LA','VEN-LV'],max_minor:2_500_000},title:'Catering recharges up to $25,000'},
 ];
 function onboarded(){
   const w=createWorld({kind:TOUR_KIND,seed:42},'world-tour');
@@ -37,27 +37,27 @@ function onboarded(){
 }
 const DAYS=tourDomain.bench.days;
 
-test('the Live Nation seat seeds a real-structured company: AUD books, deferred revenue for sold shows, labeled fixtures, history to learn from',()=>{
+test('the Live Nation seat seeds a real-structured company: USD books, deferred revenue for sold shows, labeled fixtures, history to learn from',()=>{
   const w=createWorld({kind:TOUR_KIND,seed:42},'world-tour');
-  expect(w.currency).toBe('AUD');expect(w.name).toBe('Live Nation Australasia');expect(w.seat.title).toMatch(/Tour Settlements Officer/);
-  expect(w.seat.sources.real.some((row:string)=>/JR-93271/.test(row))).toBe(true);expect(w.seat.sources.simulated.length).toBeGreaterThan(3);
+  expect(w.currency).toBe('USD');expect(w.name).toBe('Live Nation Concerts');expect(w.seat.title).toMatch(/Settlement Manager/);
+  expect(w.seat.sources.real.some((row:string)=>/JR-93290/.test(row))).toBe(true);expect(w.seat.sources.simulated.length).toBeGreaterThan(3);
   expect(w.venues.every((row:any)=>row.simulated)).toBe(true);expect(w.approvers.every((row:any)=>row.simulated)).toBe(true);
   // Ticket money for sold shows sits in deferred revenue until the event, per the 10-K; nothing is recognized yet.
   const deferred=0-find(w.accounts,'deferred-revenue-events','Account').balance_minor,receivable=find(w.accounts,'settlement-receivable','Account').balance_minor;
-  expect(deferred).toBe(receivable);expect(deferred).toBe(w.shows.reduce((total:number,show:any)=>total+show.gross_box_office_aud_minor,0));
+  expect(deferred).toBe(receivable);expect(deferred).toBe(w.shows.reduce((total:number,show:any)=>total+show.gross_box_office_usd_minor,0));
   expect(find(w.accounts,'concert-revenue','Account').balance_minor).toBe(0);
-  expect(w.tourHistory.settlements.length).toBeGreaterThan(30);expect(w.tourHistory.invoices.length).toBeGreaterThan(30);expect(w.tourHistory.deposits.some((row:any)=>row.original_currency==='NZD')).toBe(true);
+  expect(w.tourHistory.settlements.length).toBeGreaterThan(30);expect(w.tourHistory.invoices.length).toBeGreaterThan(30);expect(w.tourHistory.deposits.some((row:any)=>row.original_currency==='CAD')).toBe(true);
   expect(w.tourCaseKey).toHaveLength(10);expect(w.tourCaseKey.filter((row:any)=>row.auto)).toHaveLength(4);
   expect(createWorld({kind:TOUR_KIND,seed:42},'world-tour')).toStrictEqual(w);
   balanced(w);
   // The briefing carries the licence parameter and its source; the console never gets the history or the key.
-  expect(workBriefing(w).history.parameters.music_licence_bps).toBe(220);expect(tourDomain.hidden).toContain('tourCaseKey');
+  expect(workBriefing(w).history.parameters.music_licence_bps).toBe(50);expect(tourDomain.hidden).toContain('tourCaseKey');
 });
 
 test('every planted expectation passes the hard checks and scores correct; forbidden moves are refused by code, not prompt',()=>{
   const w=onboarded();
   for(const day of DAYS){
-    act(w,{type:'advance_to',at:`${day}T22:00:00.000Z`});
+    act(w,{type:'advance_to',at:`${day}T12:30:00.000Z`});
     for(const item of agentQueue(w).filter((row:any)=>row.kind!=='follow_up')){
       const entry=tourDomain.caseFor(w,item)!;expect(entry,item.id).toBeTruthy();
       const view=workItemView(w,item.id,{find});expect(JSON.stringify(view)).not.toMatch(/truth|judge/);
@@ -68,10 +68,10 @@ test('every planted expectation passes the hard checks and scores correct; forbi
   }
   const score=scoreSeat(w);
   expect(score.summary).toMatchObject({delivered:10,posted:10,correct:10,auto_posted:4,auto_correct:4,false_auto_posts:[],should_not_auto_posted:[],forbidden_proposals:[],missed_auto:[]});
-  // Revenue: six performed shows recognized, the postponed Adelaide show still deferred.
-  const adelaide=find(w.shows,'SH-3007','Show');expect(adelaide.recognized_minor).toBe(0);expect(w.shows.filter((row:any)=>row.recognized_minor>0)).toHaveLength(6);
-  // The A$200,000 advance the Melbourne partner paid is a liability, reduced by the two A$20,000 recoupments.
-  expect(find(w.accounts,'venue-advances','Account').balance_minor).toBe(-16_000_000);expect(find(w.venues,'VEN-MEL','Venue').contract.recoupable_advance_minor).toBe(16_000_000);
+  // Revenue: six performed shows recognized, the postponed Austin show still deferred.
+  const austin=find(w.shows,'SH-3007','Show');expect(austin.recognized_minor).toBe(0);expect(w.shows.filter((row:any)=>row.recognized_minor>0)).toHaveLength(6);
+  // The $200,000 advance the Los Angeles partner paid is a liability, reduced by the two $20,000 recoupments.
+  expect(find(w.accounts,'venue-advances','Account').balance_minor).toBe(-16_000_000);expect(find(w.venues,'VEN-LA','Venue').contract.recoupable_advance_minor).toBe(16_000_000);
   expect(find(w.tourInvoices,'AP-9001','Invoice').status).toBe('rerouted_to_appr-ta');expect(find(w.tourInvoices,'AP-9003','Invoice').status).toBe('rejected_duplicate');expect(find(w.tourInvoices,'AP-9004','Invoice').status).toBe('held_missing_document');expect(find(w.tourInvoices,'AP-9002','Invoice').status).toBe('approved_for_payment');
   // Follow-ups were scheduled for the three chases and nothing is left in clearing.
   expect(w.workItems.filter((row:any)=>row.kind==='follow_up')).toHaveLength(3);expect((summarize(w) as any).settlements_clearing_minor).toBe(0);
@@ -79,27 +79,27 @@ test('every planted expectation passes the hard checks and scores correct; forbi
 });
 
 test('the 10-K rules and the approval limits are hard checks: no recognition before performance, no approval over a limit, no deduction outside the contract',()=>{
-  const w=onboarded();act(w,{type:'advance_to',at:'2026-03-27T22:00:00.000Z'});
-  const adelaide=caseItem(w,'ANZ-77400178')!,overLimit=caseItem(w,'AP-9001')!,duplicate=caseItem(w,'AP-9003')!,missing=caseItem(w,'AP-9004')!,brisbane=caseItem(w,'ANZ-77400133')!;
-  const adlEntry=tourDomain.caseFor(w,adelaide)!,deposit=adlEntry.expected.allocations[0][1];
-  denied(w,{type:'work_propose',work_item_id:adelaide.id,allocations:[{show_id:'SH-3007',amount_minor:deposit}],lines:[],recognize:['SH-3007'],chase:{show_id:'SH-3007',amount_minor:adlEntry.expected.chase[1]},confidence:0.9,reason:'Recognize the Adelaide show now.'},agent,'recognition_before_performance');
-  denied(w,{type:'work_propose',work_item_id:adelaide.id,allocations:[{show_id:'SH-3007',amount_minor:deposit}],lines:[{show_id:'SH-3007',kind:'catering',amount_minor:adlEntry.expected.chase[1]}],recognize:[],confidence:0.9,reason:'Code the gap as catering.'},agent,'deduction_not_in_contract');
+  const w=onboarded();act(w,{type:'advance_to',at:'2026-03-27T12:30:00.000Z'});
+  const austin=caseItem(w,'WIRE-77400178')!,overLimit=caseItem(w,'AP-9001')!,duplicate=caseItem(w,'AP-9003')!,missing=caseItem(w,'AP-9004')!,vegas=caseItem(w,'WIRE-77400133')!;
+  const atxEntry=tourDomain.caseFor(w,austin)!,deposit=atxEntry.expected.allocations[0][1];
+  denied(w,{type:'work_propose',work_item_id:austin.id,allocations:[{show_id:'SH-3007',amount_minor:deposit}],lines:[],recognize:['SH-3007'],chase:{show_id:'SH-3007',amount_minor:atxEntry.expected.chase[1]},confidence:0.9,reason:'Recognize the Austin show now.'},agent,'recognition_before_performance');
+  denied(w,{type:'work_propose',work_item_id:austin.id,allocations:[{show_id:'SH-3007',amount_minor:deposit}],lines:[{show_id:'SH-3007',kind:'catering',amount_minor:atxEntry.expected.chase[1]}],recognize:[],confidence:0.9,reason:'Code the gap as catering.'},agent,'deduction_not_in_contract');
   denied(w,{type:'work_propose',work_item_id:overLimit.id,decision:'approve',confidence:0.9,reason:'The PM approved it.'},agent,'approval_limit_exceeded');
   denied(w,{type:'work_propose',work_item_id:duplicate.id,decision:'approve',confidence:0.9,reason:'Approved by the Tour Accountant.'},agent,'possible_duplicate');
   denied(w,{type:'work_propose',work_item_id:missing.id,decision:'approve',confidence:0.9,reason:'Within limit.'},agent,'document_missing');
   // Even a person cannot approve those through this seat: the checks are the gateway's, not the agent's.
   denied(w,{type:'work_correct',work_item_id:overLimit.id,decision:'approve',reason:'Just approve it.'},accountant,'approval_limit_exceeded');
-  // Brisbane's 2.4% merchant fee is inside the open receivable, so the hard checks allow coding it; the policy bound (1.8%) does not cover it, so it waits for a person, and the score counts the forbidden move if proposed.
-  const bne=tourDomain.caseFor(w,brisbane)!,taken=bne.expected.lines.find((row:any)=>row[1]==='merchant_fee')[2]+bne.expected.chase[1];
-  const result=act(w,{type:'work_propose',work_item_id:brisbane.id,allocations:bne.expected.allocations.map(([show_id,amount_minor]:[string,number])=>({show_id,amount_minor})),lines:bne.expected.lines.map(([show_id,kind,amount_minor]:[string,string,number])=>({show_id,kind,amount_minor:kind==='merchant_fee'?taken:amount_minor})),recognize:['SH-3004'],confidence:0.9,reason:'Code the fee as stated.'},agent);
+  // Las Vegas's 2.4% merchant fee is inside the open receivable, so the hard checks allow coding it; the policy bound (1.8%) does not cover it, so it waits for a person, and the score counts the forbidden move if proposed.
+  const lv=tourDomain.caseFor(w,vegas)!,taken=lv.expected.lines.find((row:any)=>row[1]==='merchant_fee')[2]+lv.expected.chase[1];
+  const result=act(w,{type:'work_propose',work_item_id:vegas.id,allocations:lv.expected.allocations.map(([show_id,amount_minor]:[string,number])=>({show_id,amount_minor})),lines:lv.expected.lines.map(([show_id,kind,amount_minor]:[string,string,number])=>({show_id,kind,amount_minor:kind==='merchant_fee'?taken:amount_minor})),recognize:['SH-3004'],confidence:0.9,reason:'Code the fee as stated.'},agent);
   expect(result.outcome).toBe('awaiting_approval');expect(result.proposal.gaps.join(' ')).toMatch(/merchant fee/);
 });
 
 test('the simulated Tour Accountant answers from the answer key and refuses what the key rules out; a judge can add a deposit or an invoice with its own key',async()=>{
-  const w=onboarded();act(w,{type:'seat_configure',colleagues:true});act(w,{type:'advance_to',at:'2026-03-24T22:00:00.000Z'});
+  const w=onboarded();act(w,{type:'seat_configure',colleagues:true});act(w,{type:'advance_to',at:'2026-03-24T12:30:00.000Z'});
   const work=(_world:string,input:any,actor:any)=>({result:act(w,input,actor)}),caseFile=async(_s:string,_w:string,truth:string)=>({text:truth,phrased_by:'case-file' as const});
-  const perth=caseItem(w,'ANZ-77400162')!;
-  act(w,{type:'work_ask',work_item_id:perth.id,to_role:'accountant',question:'Perth states gross A$12,000 below the ticket audit. Which gross do we book, and do we chase the difference?'},agent);
+  const philly=caseItem(w,'WIRE-77400162')!;
+  act(w,{type:'work_ask',work_item_id:philly.id,to_role:'accountant',question:'Philadelphia states gross $12,000 below the ticket audit. Which gross do we book, and do we chase the difference?'},agent);
   await colleagueTick('world-tour',w,work,caseFile);
   expect(w.questions.at(-1)).toMatchObject({status:'answered',answered_by:'sim:tour.accountant'});expect(w.questions.at(-1).answer).toMatch(/ticket audit/);
   // A judge records an invoice of their own with its key: the seat sees the invoice, never the key.
@@ -117,20 +117,20 @@ test('the simulated Tour Accountant answers from the answer key and refuses what
 });
 
 test('a posted settlement is reversed, never deleted: revenue returns to deferred, the show and the deposit reopen, and the record comes back to the queue',()=>{
-  const w=onboarded();act(w,{type:'advance_to',at:'2026-03-13T22:00:00.000Z'});
-  const sydney=caseItem(w,'ANZ-77400118'),balance=(id:string)=>w.accounts.find((row:any)=>row.id===id)?.balance_minor??0;
+  const w=onboarded();act(w,{type:'advance_to',at:'2026-03-13T12:30:00.000Z'});
+  const chicago=caseItem(w,'WIRE-77400118'),balance=(id:string)=>w.accounts.find((row:any)=>row.id===id)?.balance_minor??0;
   const revenue0=balance('concert-revenue'),deferred0=balance('deferred-revenue-events'),receivable0=balance('settlement-receivable');
-  const resolution={allocations:[{show_id:'SH-3003',amount_minor:196_225_600}],lines:[{show_id:'SH-3003',kind:'venue_hire',amount_minor:5_200_000},{show_id:'SH-3003',kind:'merchant_fee',amount_minor:3_563_200},{show_id:'SH-3003',kind:'music_licence',amount_minor:4_611_200}],recognize:['SH-3003']};
-  act(w,{type:'work_propose',work_item_id:sydney.id,...resolution,confidence:0.95,reason:'Settled as stated; the show performed.'},agent);
-  expect(find(w.workItems,sydney.id,'Item').state).toBe('posted');
+  const resolution={allocations:[{show_id:'SH-3003',amount_minor:199_788_800}],lines:[{show_id:'SH-3003',kind:'venue_hire',amount_minor:5_200_000},{show_id:'SH-3003',kind:'merchant_fee',amount_minor:3_563_200},{show_id:'SH-3003',kind:'music_licence',amount_minor:1_048_000}],recognize:['SH-3003']};
+  act(w,{type:'work_propose',work_item_id:chicago.id,...resolution,confidence:0.95,reason:'Settled as stated; the show performed.'},agent);
+  expect(find(w.workItems,chicago.id,'Item').state).toBe('posted');
   const show=()=>find(w.shows,'SH-3003','Show');expect(show().recognized_minor).toBe(209_600_000);expect(show().settled_minor).toBe(209_600_000);balanced(w);
-  denied(w,{type:'work_reverse',work_item_id:sydney.id,reason:'No'},agent,'work_permission_denied');
-  const reversed=act(w,{type:'work_reverse',work_item_id:sydney.id,reason:'Sydney sent a corrected statement; the merchant fee was overstated.'},accountant);
-  expect(find(w.workItems,sydney.id,'Item').state).toBe('reversed');expect(show().recognized_minor).toBe(0);expect(show().settled_minor).toBe(0);
-  const receipt=w.bankReceipts.find((row:any)=>row.bank_reference==='ANZ-77400118');expect(receipt.unapplied_minor).toBe(196_225_600);expect(receipt.status).toBe('unallocated');
+  denied(w,{type:'work_reverse',work_item_id:chicago.id,reason:'No'},agent,'work_permission_denied');
+  const reversed=act(w,{type:'work_reverse',work_item_id:chicago.id,reason:'Chicago sent a corrected statement; the merchant fee was overstated.'},accountant);
+  expect(find(w.workItems,chicago.id,'Item').state).toBe('reversed');expect(show().recognized_minor).toBe(0);expect(show().settled_minor).toBe(0);
+  const receipt=w.bankReceipts.find((row:any)=>row.bank_reference==='WIRE-77400118');expect(receipt.unapplied_minor).toBe(199_788_800);expect(receipt.status).toBe('unallocated');
   expect(balance('concert-revenue')).toBe(revenue0);expect(balance('deferred-revenue-events')).toBe(deferred0);expect(balance('settlement-receivable')).toBe(receivable0);balanced(w);
   expect(w.tourReversals).toHaveLength(1);expect(w.tourPostings[0].reversed_by).toBe(reversed.reversal.id);
-  const again=find(w.workItems,reversed.reposted_as,'Reposted item');expect(again.state).toBe('new');expect(again.reversed_from).toBe(sydney.id);expect(agentQueue(w).some((row:any)=>row.id===again.id)).toBe(true);
+  const again=find(w.workItems,reversed.reposted_as,'Reposted item');expect(again.state).toBe('new');expect(again.reversed_from).toBe(chicago.id);expect(agentQueue(w).some((row:any)=>row.id===again.id)).toBe(true);
   // Nothing was lost: the reposting settles the same show again.
   act(w,{type:'work_propose',work_item_id:again.id,...resolution,confidence:0.95,reason:'The corrected statement agrees with the ticket audit.'},agent);
   expect(find(w.workItems,again.id,'Item').state).toBe('posted');expect(show().recognized_minor).toBe(209_600_000);balanced(w);

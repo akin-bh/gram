@@ -1,4 +1,5 @@
 const paths = {
+  book: ['M4 19.5V5a2 2 0 0 1 2-2h14v15H6.5A2.5 2.5 0 0 0 4 20.5 2.5 2.5 0 0 0 6.5 23H20v-5', 'M8 7h8M8 11h6'],
   grid: ['M5 3h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z', 'M15 3h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z', 'M5 13h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z', 'M15 13h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2Z'],
   mail: ['M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z', 'm3 7 9 6 9-6'],
   wallet: ['M20 7H5a2 2 0 0 1 0-4h13v4', 'M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1', 'M21 11h-5a3 3 0 0 0 0 6h5', 'M16 14h.01'],
@@ -34,7 +35,7 @@ const paths = {
   inbox: ['M22 12h-6l-2 3h-4l-2-3H2', 'M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z'],
 };
 
-const aliases = { work: 'inbox', overview: 'grid', finance: 'wallet', procurement: 'box', sources: 'files', agent: 'sparkles', delivery: 'send', audit: 'check', create: 'plus' };
+const aliases = { books: 'book', work: 'inbox', overview: 'grid', finance: 'wallet', procurement: 'box', sources: 'files', agent: 'sparkles', delivery: 'send', audit: 'check', create: 'plus' };
 const namespace = 'http://www.w3.org/2000/svg';
 
 /** A fresh, decorative SVG. Accessible names belong on the containing control. */

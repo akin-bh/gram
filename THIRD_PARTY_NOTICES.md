@@ -12,6 +12,8 @@ gram installs these packages from npm at the versions in [`bun.lock`](bun.lock).
 | [postal-mime](https://github.com/postalsys/postal-mime) | 4.1.4 | MIT-0 |
 | [zod](https://github.com/colinhacks/zod) | 4.6.7 | MIT |
 
+The optional Books view runs [Fava](https://github.com/beancount/fava) (MIT) as a separate process, installed by `bun run fava:setup` into the git-ignored `.fava/venv` with its dependencies, among them [Beancount](https://github.com/beancount/beancount), [beanquery](https://github.com/beancount/beanquery) and [beangulp](https://github.com/beancount/beangulp) (GPL-2.0) and [cheroot](https://github.com/cherrypy/cheroot) and [Flask](https://github.com/pallets/flask) (BSD-3-Clause). gram talks to it over a Unix socket; none of their code is copied into this repository.
+
 Development uses [TypeScript](https://github.com/microsoft/TypeScript) (Apache-2.0) and [@types/bun](https://github.com/DefinitelyTyped/DefinitelyTyped) (MIT).
 
 The 2026 federal withholding tables in [`src/tax-rules/`](src/tax-rules/) are excerpted from [IRS Publication 15-T](https://www.irs.gov/publications/p15t), a US government work.
