@@ -1,6 +1,6 @@
 import { Store, ServiceError, hash, secret } from './store.ts';
 
-export type Actor = { id: string; role: 'controller' | 'agent' | 'operator'; world?: string; system?: string; scopes?: string[]; runId?: string };
+export type Actor = { id: string; role: 'controller' | 'agent' | 'operator' | 'accountant' | 'system'; world?: string; system?: string; scopes?: string[]; runId?: string };
 export type Grant = { id: string; family: string; world: string; system: string; client_id: string; actor: string; scopes: string[]; expires_at: number; refresh_expires_at: number; revoked: boolean; access_hash: string; refresh_hash: string };
 const time = () => Date.now();
 const fail = (code: string, message = code) => { throw new ServiceError(400, code, message); };

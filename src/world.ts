@@ -39,7 +39,11 @@ import {manualJournalAction,manualJournalApprovalRejected,manualJournalCollectio
 import type {ManualJournalHooks} from './manual-journals.ts';
 import {erpIdentityRequirements,erpIdentityAction,syncErpIdentities} from './erp-identities.ts';
 import {supplierPaymentRequirements,supplierPaymentCollections,supplierPaymentFeeds,supplierPaymentAction,resolveSupplierPaymentRoute,validateSupplierPaymentBinding,supplierPaymentOperationRoute,holdSupplierPaymentRoute} from './supplier-payments.ts';
-export type Actor = { id: string; role: 'controller' | 'agent' | 'operator' };
+import {CASH_KIND,cashApplicationAccounts,cashApplicationAction,cashApplicationRequirements,deliverBankFeed,normalizeCashApplication,seedCashApplication} from './cash-application.ts';
+import type {CashHooks} from './cash-application.ts';
+import {advanceWork,createWorkItem,normalizeWork,workAction,SYNC} from './work.ts';
+/** accountant and system actors exist only in the cash-application system of work. */
+export type Actor = { id: string; role: 'controller' | 'agent' | 'operator' | 'accountant' | 'system'; runId?: string };
 export type ExceptionControls = {creditNotePercent?:number;disputePercent?:number;disputeStatus?:'open'|'evidence_submitted'|'won'|'lost';returnedPaymentPercent?:number;periodClosed?:boolean};
 export type ScenarioInput = { kind?: string; name?: string; company?: string; description?: string; narrative?: string; currency?: string; seed?: string | number; orderCount?: number; initialCashMinor?: number; startingCashMinor?: number; approvalThresholdMinor?: number; cancelEvent?: boolean; initialFaults?: {system:string;mode:'offline'|'rate_limit'|'expired'}[]; limitations?: string[];exceptionControls?:ExceptionControls;procurementControls?:ProcurementControls;payrollControls?:PayrollControls;reconciliationControls?:ReconciliationControls;sourceContext?:SourceContext;treasuryControls?:TreasuryControls;blueprint?:Blueprint;foreignControls?:ForeignControls };
 export type Action = { type?: string; action?: string; [key: string]: any };
@@ -72,6 +76,7 @@ const definitions: [string, string, string[]][] = [
 ];
 export const systemCatalog = definitions.map(([id,name,feeds]) => ({ id, name, feeds, category:feeds.includes('gl-account')?'Accounting':feeds.includes('bank-transaction')?'Banking':feeds.includes('bill')?'Spend':id==='gmail'?'Communication':feeds.includes('order')?'Ticketing':feeds.includes('invoice')?'Billing':feeds.includes('book-transaction')?'Payroll':feeds.includes('document')?'Documents':'Business context', implementation: 'shared-world-projection', vendor_api_compatible: false }));
 export const scenarioCatalog = [
+  {id:'cash-application',kind:'cash-application',name:'Cash application',description:'Kestrel Brewing receivables: a year of imported receipts to learn from, then live bank lines that become work items. Short wires, split payments, a parent paying for its bars, returned keg deposits, early-payment discounts, unidentified and duplicate receipts, and a new deduction code.'},
   {id:'foreign-service-close',kind:'foreign-service-close',name:'Foreign services',description:'Completed-service foreign receivables and payables, source FX recognition, closing valuation and independently approved native-bank settlements.'},
   {id:'payroll-federal',kind:'payroll-federal',name:'Federal payroll',description:'Versioned 2026 US federal regular-wage withholding, Social Security caps, Medicare thresholds and FUTA with explicit W-4 and historical wage sources. Independent wage and deposit approvals; no state tax or return filing.'},
   {id:'fixed-asset-close',kind:'fixed-asset-close',name:'Fixed assets',description:'Procurement-backed capitalization, completed-month straight-line book depreciation and independently approved sale or retirement. Sale creates receivables before collection.'},
@@ -97,9 +102,9 @@ const chart = [
  * Bank transactions, journals and existing account balances never change here.
  */
 export function normalizeWorld(w:World):World {
-  normalizeProcurement(w);normalizePayroll(w);normalizeReconciliation(w);normalizeBankActivity(w);normalizeFixedAssets(w);normalizeTreasury(w);normalizeForeignObligations(w);
+  normalizeProcurement(w);normalizePayroll(w);normalizeReconciliation(w);normalizeBankActivity(w);normalizeFixedAssets(w);normalizeTreasury(w);normalizeForeignObligations(w);normalizeCashApplication(w);normalizeWork(w);
   for(const key of ['creditNotes','disputes','paymentReturns','externalEvents','settledUnposted'])if(w[key]===undefined)w[key]=[];
-  for(const [id,name,type] of chart)if(!w.accounts.some(a=>a.id===id))w.accounts.push({id,name,type,currency:'USD',balance_minor:0});
+  for(const [id,name,type] of [...chart,...(w.kind===CASH_KIND?cashApplicationAccounts:[])])if(!w.accounts.some(a=>a.id===id))w.accounts.push({id,name,type,currency:'USD',balance_minor:0});
   const operations=new Map(w.operations.map(operation=>[operation.id,operation])),losses=new Map<string,number>(),discharged=new Map<string,number>();
   for(const dispute of w.disputes.filter((item:any)=>item.status==='lost')){
     losses.set(dispute.payment_id,(losses.get(dispute.payment_id)??0)+dispute.amount_minor);
@@ -111,7 +116,7 @@ export function normalizeWorld(w:World):World {
   return w;
 }
 export const actionRequirements:Record<string,{role:'controller'|'operator';system:string;external?:boolean;internal?:boolean;systems?:readonly string[]}>={
-  ...procurementRequirements,...payrollRequirements,...reconciliationRequirements,...bankActivityRequirements,...fixedAssetRequirements,...treasuryRequirements,...foreignObligationRequirements,...masterDataRequirements,...manualJournalRequirements,...erpIdentityRequirements,...supplierPaymentRequirements,...ticketingRequirements,
+  ...cashApplicationRequirements,...procurementRequirements,...payrollRequirements,...reconciliationRequirements,...bankActivityRequirements,...fixedAssetRequirements,...treasuryRequirements,...foreignObligationRequirements,...masterDataRequirements,...manualJournalRequirements,...erpIdentityRequirements,...supplierPaymentRequirements,...ticketingRequirements,
   request_bill_payment:{role:'operator',system:'mercury'},
   issue_credit_note:{role:'controller',system:'chargebee',external:true},
   open_dispute:{role:'controller',system:'stripe',external:true},
@@ -216,11 +221,12 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
     if(['exceptionControls','procurementControls','payrollControls','reconciliationControls','treasuryControls','foreignControls'].some(key=>input[key as keyof ScenarioInput]!==undefined))reject('blueprint_preset_conflict','Blueprint source graphs cannot be combined with preset economic controls');
     if(input.initialCashMinor===undefined&&input.startingCashMinor===undefined)reject('blueprint_opening_capital_required','Blueprint worlds require explicit initialCashMinor or startingCashMinor, including zero');
     if(input.cancelEvent===true)reject('blueprint_preset_conflict','Preset ticket cancellation cannot be applied to a blueprint source graph');
+    if(kind===CASH_KIND)reject('blueprint_preset_conflict','The cash-application company has its own imported history; it cannot be combined with a blueprint');
   }
   const defaultNames: Record<string, string> = {
     'ticket-cancellation':'Ticketing', 'saas-collections':'Collections', 'supplier-fraud':'Suppliers',
     'period-close':'Month end', treasury:'Treasury', 'settlement-exceptions':'Settlements',
-    'foreign-service-close':'Trade','payroll-federal':'Federal','fixed-asset-close':'Assets','treasury-fx':'FX','procurement-matching':'Procurement', 'payroll-close':'Payroll', 'bank-reconciliation':'Reconciliation',
+    'cash-application':'Kestrel Brewing','foreign-service-close':'Trade','payroll-federal':'Federal','fixed-asset-close':'Assets','treasury-fx':'FX','procurement-matching':'Procurement', 'payroll-close':'Payroll', 'bank-reconciliation':'Reconciliation',
   };
   if (!scenarioCatalog.some(s => s.kind === kind)) reject('unknown_scenario','Unknown scenario kind');
   if(input.foreignControls!==undefined&&kind!=='foreign-service-close')reject('invalid_scenario','foreignControls require foreign-service-close');
@@ -236,7 +242,7 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   if(input.reconciliationControls!==undefined&&kind!=='bank-reconciliation')reject('invalid_scenario','reconciliationControls require the bank-reconciliation family');
   const reconciliationControls=kind==='bank-reconciliation'?validatedReconciliationControls(input.reconciliationControls):undefined;
   if(input.initialCashMinor!==undefined&&input.startingCashMinor!==undefined&&input.initialCashMinor!==input.startingCashMinor)reject('conflicting_cash','initialCashMinor and startingCashMinor disagree');
-  const count = integer(input.orderCount ?? (['procurement-matching','bank-reconciliation'].includes(kind)?4:['payroll-close','payroll-federal','fixed-asset-close','foreign-service-close'].includes(kind)?3:24),'orderCount',1,kind==='foreign-service-close'?50:['procurement-matching','bank-reconciliation','fixed-asset-close'].includes(kind)?200:['payroll-close','payroll-federal'].includes(kind)?100:2000);
+  const count = integer(input.orderCount ?? (kind===CASH_KIND?14:['procurement-matching','bank-reconciliation'].includes(kind)?4:['payroll-close','payroll-federal','fixed-asset-close','foreign-service-close'].includes(kind)?3:24),'orderCount',1,kind===CASH_KIND?60:kind==='foreign-service-close'?50:['procurement-matching','bank-reconciliation','fixed-asset-close'].includes(kind)?200:['payroll-close','payroll-federal'].includes(kind)?100:2000);
   const seed = input.seed ?? 42;
   if((typeof seed!=='string'&&typeof seed!=='number')||(typeof seed==='string'&&seed.length>200)||(typeof seed==='number'&&!Number.isSafeInteger(seed)))reject('invalid_seed','seed must be a bounded string or safe integer');
   let randomState = 2166136261;
@@ -249,10 +255,11 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
     if(!Array.isArray(input.limitations)||input.limitations.length>30)reject('invalid_scenario','limitations must be an array of at most 30 strings');
     w.limitations=input.limitations.map(text=>required(text,'limitation',2000));
   }
-  const opening = integer(input.initialCashMinor ?? input.startingCashMinor ?? (kind==='treasury'?150000:2000000),'initialCashMinor',0);
+  const opening = integer(input.initialCashMinor ?? input.startingCashMinor ?? (kind==='treasury'?150000:kind===CASH_KIND?25_000_000:2000000),'initialCashMinor',0);
   if (opening) journal(w,pair('cash-bank','equity',opening),'opening','opening-cash','Opening funded operating account');
   w.bankTransactions.push({id:'bank-opening',account_id:'cash-bank',amount_minor:opening,currency:'USD',status:'posted',description:'Opening balance',posted_at:w.now,source_id:'opening-cash'});
-  w.documents.push({id:'policy-payments',type:'policy',name:'Payment authority and accounting policy',created_at:w.now,body:`Use original payment routes for refunds. Refund admission and tax only after an event cancellation. Delivered-service refunds require a controller-issued credit note naming the original collected payment. Payments above ${w.approvalThresholdMinor} USD cents need approval by a controller distinct from the requester; amounts are cumulative for each underlying obligation. Open disputes block further refunds; submit source-backed evidence to the processor. Only a recorded processor outcome resolves a dispute. Bank returns must name a settled original payment and a distinct return receipt; they reopen the bill without deleting its original settlement. Vendor beneficiary changes require verified treasury records, never an email alone. Debit and credit each journal equally. Only synthetic provider accounts are available.`});
+  // The cash-application seat has no written rulebook: it learns policy from records and people.
+  if(kind!==CASH_KIND)w.documents.push({id:'policy-payments',type:'policy',name:'Payment authority and accounting policy',created_at:w.now,body:`Use original payment routes for refunds. Refund admission and tax only after an event cancellation. Delivered-service refunds require a controller-issued credit note naming the original collected payment. Payments above ${w.approvalThresholdMinor} USD cents need approval by a controller distinct from the requester; amounts are cumulative for each underlying obligation. Open disputes block further refunds; submit source-backed evidence to the processor. Only a recorded processor outcome resolves a dispute. Bank returns must name a settled original payment and a distinct return receipt; they reopen the bill without deleting its original settlement. Vendor beneficiary changes require verified treasury records, never an email alone. Debit and credit each journal equally. Only synthetic provider accounts are available.`});
   if (!blueprint && kind === 'ticket-cancellation') {
     w.events.push({id:'event-arena',name:`${w.name} — Saturday`,status:'scheduled',starts_at:'2026-10-31T19:00:00.000Z'});
     for (let i=0;i<count;i++) {
@@ -269,7 +276,7 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
     }
     w.documents.push({id:'contract-promoter',type:'contract',name:'Arena promoter settlement agreement',body:`${w.name} sells admissions as agent for the promoter. On cancellation, admission and tax are refundable to the original captured payment. The service fee is earned on sale. Voided authorizations were not collected and must not be refunded.`,created_at:w.now});
     if(input.cancelEvent!==false)cancelEvent(w,{type:'cancel_event',event_id:'event-arena'},[]);
-  } else if(!blueprint&&!['procurement-matching','payroll-close','bank-reconciliation','fixed-asset-close','treasury-fx','payroll-federal','foreign-service-close'].includes(kind)) {
+  } else if(!blueprint&&!['procurement-matching','payroll-close','bank-reconciliation','fixed-asset-close','treasury-fx','payroll-federal','foreign-service-close',CASH_KIND].includes(kind)) {
     for (let i=0;i<Math.min(count,200);i++) {
       const amount = (100+Math.floor(random()*1900))*100;
       const customer = {id:`cus_${i+1}`,name:`Customer ${i+1}`,email:`billing${i+1}@customer.test`}; w.customers.push(customer);
@@ -292,6 +299,7 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   const seedHooks={perform:(action:Action,actor:Actor)=>applyAction(w,action,actor).result,document:(type:string,name:string,body:string,refs:any)=>evidenceDocument(w,type,name,body,refs),mail:(message:any)=>mail(w,message,[]),fail:reject};
   if(blueprint){try{materializeBlueprint(w,blueprint,{perform:(action:Action,actor:Actor)=>applyAction(w,action,actor)});}catch(error){if(error instanceof BlueprintError)reject(error.code,error.message);throw error;}w.sourceMode='blueprint';}
   else {
+  if(kind===CASH_KIND)seedCashApplication(w,count,random,cashHooks(w,[]));
   if(kind==='foreign-service-close')seedForeignServiceScenario(w,count,input.foreignControls,{...seedHooks,perform:(action:Action,actor:Actor)=>applyAction(w,action,actor)});
   if(kind==='payroll-federal')seedStatutoryPayrollScenario(w,count,seedHooks);
   if(kind==='fixed-asset-close')seedFixedAssetScenario(w,count,random,seedHooks);
@@ -350,6 +358,10 @@ function seedReconciliationHistory(w:World,controls:Required<ReconciliationContr
   mail(w,{from:'controller@simulation.test',subject:'Reconcile statement sources and historical posting dates',body:doc.body,source_refs:[doc.id,statement.id,statement.document_id]},[]);
 }
 
+function cashHooks(w:World,events:DomainEvent[]):CashHooks {
+  const hooks:CashHooks={...procurementHooks(w,events),effect:(type,targetId,amount,lines,externalId,bankDelta)=>economicEvent(w,type,targetId,amount,lines,externalId,bankDelta,events),post:(lines,sourceType,sourceId,description)=>journal(w,lines,sourceType,sourceId,description),createWork:item=>createWorkItem(w,{...item,reason:'New bank line'},SYNC,hooks)};
+  return hooks;
+}
 function ticketingHooks(w:World,events:DomainEvent[]):TicketingHooks {
   return {...procurementHooks(w,events),post:operation=>postSettlement(w,operation,events),bankAvailable:()=>providerBankBalance(w)-totalReserved(w),cancel:(eventId,reason)=>cancelEvent(w,{event_id:eventId,reason},events)};
 }
@@ -544,6 +556,7 @@ function evidenceDocument(w:World,type:string,name:string,body:string,refs:any){
 const canonical=(value:any):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
 function saveExternal(w:World,action:Action,result:any){w.externalEvents.push({id:action.external_event_id,type:action.type??action.action,fingerprint:canonical(action),received_at:w.now,result:clone(result)});return result;}
 function advance(w: World, events: DomainEvent[]) {
+  if(w.kind===CASH_KIND){const hooks=cashHooks(w,events);deliverBankFeed(w,hooks);advanceWork(w,hooks);}
   const foreign=advanceForeignObligations(w,foreignHooks(w,events)),payroll=advancePayroll(w,payrollHooks(w,events)),treasury=advanceTreasury(w,treasuryHooks(w,events)),settled:string[]=[...foreign.settled,...payroll.settled,...treasury.settled],blocked:any[]=[...foreign.blocked,...payroll.blocked,...treasury.blocked];
   for (const operation of w.operations.filter(o=>o.status==='pending'&&o.settles_at<=w.now&&!payrollPaymentTypes.includes(o.type)&&!treasuryPaymentTypes.includes(o.type)&&!foreignPaymentTypes.includes(o.type))) {
     const processorFunded=operation.type==='refund'&&operation.cash_account_id==='cash-processor';
@@ -614,6 +627,10 @@ function mutate(w: World, action: Action, actor: Actor, events: DomainEvent[], a
     const previous=w.externalEvents.find((event:any)=>event.id===action.external_event_id);
     if(previous){if(previous.fingerprint!==canonical(action))reject('external_event_conflict','External event ID was already used for different facts',409);return {...clone(previous.result),replayed:true};}
   }
+  const cash=cashApplicationAction(w,action,actor,cashHooks(w,events));
+  if(cash.handled)return saveExternal(w,action,cash.result);
+  const work=workAction(w,action,actor,cashHooks(w,events));
+  if(work.handled)return work.result;
   const erp=erpIdentityAction(w,action,actor,{id:prefix=>uid(w,prefix),fail:reject,emit:(type,data)=>emit(events,w,type,data)});
   if(erp.handled)return saveExternal(w,action,erp.result);
   const manual=manualJournalAction(w,action,actor,manualJournalHooks(w,events),approved);
@@ -826,7 +843,10 @@ function mutate(w: World, action: Action, actor: Actor, events: DomainEvent[], a
   if(type==='set_fault') {
     controller(actor);if(!systemCatalog.some(s=>s.id===action.system))reject('unknown_system','Unknown connection');
     if(!['offline','rate_limit','expired','healthy'].includes(action.mode))reject('invalid_fault','Unsupported connection fault');
-    w.faults[action.system]={mode:action.mode,since:w.now};emit(events,w,'connection.changed',{system:action.system,mode:action.mode});return w.faults[action.system];
+    w.faults[action.system]={mode:action.mode,since:w.now};emit(events,w,'connection.changed',{system:action.system,mode:action.mode});
+    // Approved work blocked by an outage posts as soon as the ledger is reachable again.
+    if(w.seat&&action.mode==='healthy')advanceWork(w,cashHooks(w,events));
+    return w.faults[action.system];
   }
   if(type==='close_period'||type==='reopen_period') {controller(actor);w.periodClosed=type==='close_period';emit(events,w,'accounting.period_changed',{closed:w.periodClosed});return {periodClosed:w.periodClosed,...(w.periodClosed?{}:advance(w,events))};}
   if(type==='decide_approval') {
@@ -835,7 +855,9 @@ function mutate(w: World, action: Action, actor: Actor, events: DomainEvent[], a
     if(approval.status!=='pending')reject('approval_already_decided','This approval already has a decision',409);
     if(!['approve','reject','accept','approved','rejected'].includes(action.decision))reject('invalid_decision','Decision must be approve or reject');
     approval.status=['approve','accept','approved'].includes(action.decision)?'approved':'rejected';approval.decided_by=actor.id;approval.decided_at=w.now;
-    emit(events,w,'approval.decided',{approval_id:approval.id,decision:approval.status});
+    // The why is recorded with the decision; a rejection must say it.
+    if(action.reason!==undefined&&action.reason!=='')approval.decision_reason=required(action.reason,'reason',2000);
+    emit(events,w,'approval.decided',{approval_id:approval.id,decision:approval.status,...(approval.decision_reason?{reason:approval.decision_reason}:{})});
     if(approval.status==='rejected'){
       manualJournalApprovalRejected(w,approval);payrollApprovalRejected(w,approval);rejectFixedAssetApproval(w,approval);treasuryApprovalRejected(w,approval);foreignApprovalRejected(w,approval);
       if(approval.action.type==='approve_purchase_order')lookup(w.purchaseOrders,approval.action.purchase_order_id,'Purchase order').status='rejected';
@@ -847,7 +869,8 @@ function mutate(w: World, action: Action, actor: Actor, events: DomainEvent[], a
 }
 export function applyAction(world: World, action: Action, actor: Actor): { result: any; events: DomainEvent[] } {
   if(!action||typeof action!=='object'||Array.isArray(action))reject('invalid_action','Action must be an object');
-  if(!actor?.id||!['controller','agent','operator'].includes(actor.role))reject('invalid_actor','Valid actor required',403);
+  if(!actor?.id||!['controller','agent','operator','accountant','system'].includes(actor.role))reject('invalid_actor','Valid actor required',403);
+  if(['accountant','system'].includes(actor.role)&&!world.seat)reject('invalid_actor','Accountant and system actors work only through a seat',403);
   // A metadata rename must not migrate or repair unrelated economic state.
   const draft=(action.type??action.action)==='rename_company'?clone(world):normalizeWorld(clone(world)),events:DomainEvent[]=[];
   if((action.type??action.action)!=='rename_company')normalizeManualJournals(draft);
@@ -920,6 +943,10 @@ export function summarize(w: World) {
     ...(w.foreignControls?{foreignControls:clone(w.foreignControls),foreignSources:clone(w.foreignSources)}:{}),
     ...(w.treasuryControls?{treasuryControls:clone(w.treasuryControls),treasurySources:clone(w.treasurySources)}:{}),
     ...(w.reconciliationControls?{reconciliationControls:clone(w.reconciliationControls)}:{}),
+    ...(w.seat?{seat:{title:w.seat.title,one_line:w.seat.one_line,autonomy:clone(w.seat.autonomy),onboarding:clone(w.seat.onboarding)},
+      work:Object.fromEntries(['new','proposed','needs_info','answered','rejected','approved','posted','escalated','scheduled','closed'].map(state=>[state,w.workItems.filter((item:any)=>item.state===state).length])),
+      unapplied_cash_minor:0-lookup(w.accounts,'unapplied-cash','Account').balance_minor,bank_feed_pending:w.bankFeed.filter((row:any)=>!row.delivered_at).length,
+      policies_active:w.policies.filter((row:any)=>row.status==='active').length,policies_proposed:w.policies.filter((row:any)=>row.status==='proposed').length,open_questions:w.questions.filter((row:any)=>row.status==='open').length}:{}),
     unclassified_bank_activities:w.bankActivities.filter((activity:any)=>activity.status!=='classified').length,
     open_bank_statements:w.bankStatements.filter((statement:any)=>['open','prepared'].includes(statement.status)).length,closed_bank_statements:w.bankStatements.filter((statement:any)=>statement.status==='closed').length,
     wages_payable_minor:w.payrollRuns.filter((run:any)=>['pending','paid'].includes(run.status)).reduce((sum:number,run:any)=>sum+run.net_minor-run.amount_paid_minor,0),payroll_taxes_payable_minor:w.payrollRuns.filter((run:any)=>['pending','paid'].includes(run.status)).reduce((sum:number,run:any)=>sum+run.tax_total_minor-run.tax_paid_minor,0),payroll_paid_minor:w.payrollRuns.reduce((sum:number,run:any)=>sum+run.amount_paid_minor,0),payroll_taxes_remitted_minor:w.payrollRuns.reduce((sum:number,run:any)=>sum+run.tax_paid_minor,0),

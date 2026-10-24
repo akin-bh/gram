@@ -6,7 +6,7 @@ function safePath(value: unknown) {
   if (typeof value !== 'string') return;
   const path = value.split(/[?#]/, 1)[0];
   if (path.length > 512 || /[\u0000-\u0020\u007f\\]|%(?:00|0a|0d|5c)|sk-(?:ant|proj)-/i.test(path)) return;
-  if (!/^\/api\/worlds\/[A-Za-z0-9_-]{1,200}\/(?:context|records|actions|attachment-content\/[A-Za-z0-9_.%-]+\/[A-Za-z0-9_.%-]+)$/.test(path)) return;
+  if (!/^\/api\/worlds\/[A-Za-z0-9_-]{1,200}\/(?:context|records|actions|work(?:\/(?:briefing|history|precedents|items\/[A-Za-z0-9_.%-]+))?|attachment-content\/[A-Za-z0-9_.%-]+\/[A-Za-z0-9_.%-]+)$/.test(path)) return;
   return path;
 }
 
@@ -20,7 +20,7 @@ export function compactRunProgress(event: unknown, at: string): RunProgress | un
     if (value.method === 'GET' || value.method === 'POST') progress.method = value.method;
     const path = safePath(value.path); if (path) progress.path = path;
     if (Number.isInteger(value.status) && value.status >= 100 && value.status <= 599) progress.status = value.status;
-    if (value.type === 'agent.tool.request' && value.method === 'POST' && path?.endsWith('/actions') && typeof value.body?.type === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(value.body.type)) progress.action_type = value.body.type;
+    if (value.type === 'agent.tool.request' && value.method === 'POST' && (path?.endsWith('/actions') || path?.endsWith('/work')) && typeof value.body?.type === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(value.body.type)) progress.action_type = value.body.type;
   }
   return progress;
 }

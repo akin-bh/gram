@@ -14,6 +14,14 @@ import {defaultGeneratorProvider,generateWorldDraft,loadGeneratorConfig} from '.
 import { Webhooks } from './webhooks.ts';
 import { MAIL_LIMITS } from './mail.ts';
 import {buildAgentContextOverview,buildAgentProviderContext} from './agent-context.ts';
+import {runSeat} from './seat.ts';
+import type {SeatMode} from './seat.ts';
+import {agentQueue,agentWorkActions,controllerWorkActions,humanWorkActions,precedentSearch,whyTimeline,workBriefing,workItemView,GATEWAY} from './work.ts';
+import {queryHistory,HistoryQueryError} from './history-sql.ts';
+import {scoreCashApplication} from './cash-score.ts';
+import {SlackBridge,loadSlackConfig} from './slack.ts';
+import {argonPhrase,colleagueTick} from './colleague.ts';
+import type {SlackDeps} from './slack.ts';
 
 const root = resolve(import.meta.dir, '..');
 const json = (data: any, status = 200, headers: Record<string, string> = {}) => Response.json(data, { status, headers });
@@ -31,7 +39,16 @@ async function body(request: Request): Promise<any> {
 function requireController(actor: Actor | undefined): asserts actor is Actor { if (!actor || actor.role !== 'controller') throw new ServiceError(403, 'controller_required'); }
 function scoped(actor: Actor | undefined, world: string): asserts actor is Actor { if (!actor) throw new ServiceError(401, 'authentication_required'); if (actor.world && actor.world !== world) throw new ServiceError(403, 'world_scope_mismatch'); }
 
-export type ServiceOptions = { database?: string; baseUrl?: string; agentEnabled?: boolean; generationEnabled?:boolean; webhookPorts?: number[]; deliveryIntervalMs?: number };
+export type ServiceOptions = { database?: string; baseUrl?: string; agentEnabled?: boolean; generationEnabled?:boolean; webhookPorts?: number[]; deliveryIntervalMs?: number; seatIntervalMs?: number; maxSeatRunsPerHour?: number;
+  /** Test seam: a scripted seat that drives the same HTTP work API as the Claude run. */
+  seatRunner?: typeof runSeat;
+  /** false disables Slack; an object injects configuration and transports for tests. */
+  slack?: false | (Partial<Pick<SlackDeps,'transport'|'socket'|'config'>> & { connect?: boolean });
+  /** Test seam for simulated colleagues' wording; decisions always come from the case file. */
+  colleaguePhrase?: Parameters<typeof colleagueTick>[3] };
+type RunSpec={kind:'instruction';instruction:string;actor:string;requestId?:string}|{kind:'seat';mode:SeatMode;items:string[];reason:string;trigger:string;actor:string;requestId?:string};
+/** The seat reads the bank, the ERP and the mailbox; it waits until all three are connected. */
+export const SEAT_SYSTEMS=['bank','netsuite','gmail'];
 export async function createService(options: ServiceOptions = {}) {
   const baseUrl = options.baseUrl ?? 'http://127.0.0.1:24300';
   // Cookies ignore ports. Isolate concurrently running local UI instances.
@@ -74,8 +91,10 @@ export async function createService(options: ServiceOptions = {}) {
     return current;
   }
   const snapshot = (id: string) => {
-    const world = store.world(id);
-    return { world, summary: summarize(world), connections: oauth.connections(id), runs: store.all('runs').filter(r => r.world === id).map(({ token, ...r }) => r),
+    // The imported history and the answer key stay server-side; the console gets counts.
+    const full = store.world(id), summary = summarize(full), {cashHistory,cashCaseKey,...world} = full;
+    if (cashHistory) Object.assign(world, { cash_history_counts: { invoices: cashHistory.invoices.length, receipts: cashHistory.receipts.length, applications: cashHistory.applications.length, keg_returns: cashHistory.keg_returns.length, as_of: cashHistory.as_of } });
+    return { world, summary, connections: oauth.connections(id), runs: store.all('runs').filter(r => r.world === id).map(({ token, ...r }) => r),
       webhooks: { subscriptions: hooks.list(id), deliveries: hooks.recent(id, 50), receiver: { mode: store.get('receiver-modes', id)?.mode ?? 'accept', receipts: store.all('webhook-receipts').filter(r => r.world_id === id).slice(-50) } } };
   };
   function authorizeAction(worldId:string,input:any,actor:Actor){
@@ -100,6 +119,8 @@ export async function createService(options: ServiceOptions = {}) {
     for(const event of applied.events)store.audit(world.id,event.type,event,actor.id,requestId);
     hooks.enqueue(world.id,applied.events,{requestId,actor:actor.id,revision:world.revision});
     store.audit(world.id,'action.completed',{action:input,result:applied.result,revision:world.revision,run_id:actor.runId},actor.id,requestId);
+    // Slack cards are redrawn from committed state, after the transaction.
+    if(slack&&world.seat)queueMicrotask(()=>void slack!.reconcile(world.id));
   }
   function action(worldId:string,input:any,actor:Actor,key:string,requestId:string,ifMatch?:string|null){
     authorizeAction(worldId,input,actor);
@@ -110,6 +131,113 @@ export async function createService(options: ServiceOptions = {}) {
       return {result:applied.result,revision:world.revision,summary:summarize(world)};
     });
   }
+  /** Every write to the system of work goes through here: the role check, one atomic
+   * commit with its audit events, and an audit record for attempts that were denied. */
+  function workCommand(worldId:string,input:any,actor:Actor,key:string,requestId:string){
+    const type=String(input?.type??''),allowed=actor.role==='agent'?agentWorkActions:actor.role==='controller'?[...humanWorkActions,...controllerWorkActions,'work_retry_posting']:actor.role==='accountant'?humanWorkActions:actor.role==='system'?['work_retry_posting','seat_onboarded']:[];
+    try{
+      if(!allowed.includes(type))throw new ServiceError(403,'work_action_denied',`${actor.role} may not perform ${type||'an unnamed action'}`);
+      return store.once(worldId,actor.id,key,input,()=>{
+        const world=store.world(worldId),applied=applyAction(world,input,actor as any);
+        recordAction(world,input,applied,actor,requestId);return {result:applied.result,revision:world.revision};
+      });
+    }catch(error:any){
+      if(error?.code!=='idempotency_conflict')store.audit(worldId,'work.denied',{action:type,subject:input?.work_item_id??input?.question_id??input?.policy_id??null,code:error?.code??'internal_error',message:String(error?.message??error),run_id:actor.runId},actor.id,requestId);
+      throw error;
+    }
+  }
+  const seatWorlds=new Set<string>(store.worlds().filter(world=>world.seat).map(world=>world.id));
+  const slackSetup=options.slack===false?{available:false,reason:'Slack disabled for this instance.'}:options.slack?.config?{available:true,config:options.slack.config}:loadSlackConfig();
+  const slack:SlackBridge|undefined=slackSetup.available&&slackSetup.config?new SlackBridge({store,baseUrl,config:slackSetup.config,world:id=>store.world(id),work:(world,input,actor,key,requestId)=>workCommand(world,input,actor,key,requestId),...(options.slack?{transport:options.slack.transport,socket:options.slack.socket}:{})}):undefined;
+  if(slack&&(options.slack===undefined||(options.slack!==false&&options.slack.connect!==false)))void slack.connect();
+  const seatState=new Map<string,{failures:number;retryAt:number;starts:number[];attempts:Map<string,{count:number;updated:string}>}>();
+  const stateFor=(id:string)=>{let state=seatState.get(id);if(!state){state={failures:0,retryAt:0,starts:[],attempts:new Map()};seatState.set(id,state);}return state;};
+  function launchRun(id:string,spec:RunSpec){
+    if (store.all('runs').some(r => r.world === id && r.status === 'running')) throw new ServiceError(409, 'agent_already_running');
+    const world=store.world(id),runId = crypto.randomUUID(), token = secret(), tokenHash = hash(token), startedAt = new Date().toISOString();
+    const instruction=spec.kind==='instruction'?spec.instruction:`${spec.mode==='onboarding'?'Onboarding':'Shift'} · ${spec.reason}`;
+    const run:any = { id: runId, world: id, status: 'running', instruction, model: config().model, started_at: startedAt, output: '', progress: compactRunProgress({ type: 'agent.started' }, startedAt), ...(spec.kind==='seat'?{seat:{mode:spec.mode,items:spec.items,trigger:spec.trigger,item_versions:Object.fromEntries(spec.items.map(item=>[item,world.workItems?.find((row:any)=>row.id===item)?.updated_at??null]))}}:{}) };
+    store.put('agent-tokens', tokenHash, { world: id, actor: `agent-world:${id}`, runId, expires_at: Date.now() + 900_000 });
+    store.put('runs', runId, run); store.audit(id, 'agent.started', { run_id: runId, instruction, model: run.model, ...(run.seat?{seat:run.seat,started_by:spec.actor}:{}) }, spec.actor, spec.requestId);
+    const abort = new AbortController(),onEvent=(e:Record<string,unknown>) => {
+      const current = store.get('runs', runId) ?? run, updated = withRunProgress(current, e, new Date().toISOString());
+      if (updated !== current) store.put('runs', runId, updated);
+      store.audit(id, 'agent.trace', { run_id: runId, ...e }, `agent:${runId}`);
+    };
+    const work=spec.kind==='seat'?(options.seatRunner??runSeat)({worldId:id,baseUrl,token,mode:spec.mode,items:spec.items,reason:spec.reason,company:world.name,signal:abort.signal,onEvent}):runAgent({ worldId: id, baseUrl, token, instruction, signal: abort.signal, onEvent });
+    const promise = work.then(result => {
+      store.put('runs', runId, finishRun(store.get('runs', runId) ?? run, 'completed', new Date().toISOString(), result)); store.audit(id, 'agent.completed', { run_id: runId, ...result }, `agent:${runId}`);
+      if(spec.kind==='seat')afterSeatRun(id,runId,spec,true);
+    }).catch(error => {
+      const safe = redact(String(error)).replaceAll(token, '[REDACTED]');
+      store.put('runs', runId, finishRun(store.get('runs', runId) ?? run, abort.signal.aborted ? 'cancelled' : 'failed', new Date().toISOString(), { error: safe })); store.audit(id, 'agent.failed', { run_id: runId, error: safe }, `agent:${runId}`);
+      if(spec.kind==='seat')afterSeatRun(id,runId,spec,false);
+    }).finally(() => { store.delete('agent-tokens', tokenHash); workers.delete(runId); });
+    workers.set(runId, { abort, promise });
+    return run;
+  }
+  /** Items a run left untouched are counted; after two such runs the item stops
+   * relaunching the seat and is shown as stalled until something about it changes. */
+  function afterSeatRun(id:string,runId:string,spec:Extract<RunSpec,{kind:'seat'}>,completed:boolean){
+    const state=stateFor(id),world=store.world(id);
+    if(completed){state.failures=0;state.retryAt=0;}else{state.failures++;state.retryAt=Date.now()+Math.min(600_000,60_000*state.failures);}
+    for(const itemId of spec.items){
+      const item=world.workItems?.find((row:any)=>row.id===itemId);if(!item)continue;
+      const previous=state.attempts.get(itemId);
+      if(agentQueue(world).some((row:any)=>row.id===itemId)&&(!previous||previous.updated===item.updated_at))state.attempts.set(itemId,{count:(previous?.count??0)+1,updated:item.updated_at});
+      else state.attempts.delete(itemId);
+      if((state.attempts.get(itemId)?.count??0)===2)store.audit(id,'seat.item_stalled',{work_item_id:itemId,run_id:runId},'dispatcher');
+    }
+    if(completed&&spec.mode==='onboarding'&&world.seat?.onboarding?.status==='pending'&&world.policies?.length){
+      try{workCommand(id,{type:'seat_onboarded',run_id:runId},GATEWAY as any,`onboarded:${runId}`,crypto.randomUUID());}catch(error){store.audit(id,'seat.onboarding_record_failed',{run_id:runId,error:String(error)},'dispatcher');}
+    }
+  }
+  function stalled(id:string){return [...stateFor(id).attempts].filter(([,row])=>row.count>=2).map(([item])=>item);}
+  function seatStatus(id:string){
+    const world=store.world(id);if(!world.seat)return undefined;
+    const connections=oauth.connections(id),missing=SEAT_SYSTEMS.filter(system=>connections.find((row:any)=>row.system===system)?.status!=='connected'),state=stateFor(id);
+    const running=store.all('runs').find((row:any)=>row.world===id&&row.status==='running');
+    return {on_duty:Boolean(world.seat.autonomy.enabled),agent_available:Boolean(options.seatRunner)||config().available,missing_connections:missing,running_run:running?.id??null,stalled_items:stalled(id),retry_at:state.retryAt>Date.now()?new Date(state.retryAt).toISOString():null,runs_last_hour:state.starts.filter(at=>at>Date.now()-3_600_000).length,max_runs_per_hour:options.maxSeatRunsPerHour??12};
+  }
+  /** Work starts itself: a new bank line, an answer or a rejection puts an item in the
+   * seat's queue, and the dispatcher launches a run for it without anyone asking. */
+  function nextSeatRun(id:string,world:any):Extract<RunSpec,{kind:'seat'}>|undefined{
+    const blocked=new Set(stalled(id)),queue=agentQueue(world).filter((item:any)=>!blocked.has(item.id));
+    if(world.seat.onboarding?.status==='pending')return {kind:'seat',mode:'onboarding',items:queue.slice(0,6).map((item:any)=>item.id),reason:`No policies yet; ${world.cashHistory?.receipts?.length??0} historical receipts to learn from.`,trigger:'onboarding',actor:'dispatcher'};
+    if(!queue.length)return;
+    const items=queue.slice(0,6),count=(state:string)=>items.filter((item:any)=>item.state===state).length,parts=[];
+    if(count('new'))parts.push(`${count('new')} new (${[...new Set(items.filter((item:any)=>item.state==='new').map((item:any)=>item.kind==='follow_up'?'follow-up due':'bank line'))].join(', ')})`);
+    if(count('answered'))parts.push(`${count('answered')} answered by a person`);
+    if(count('rejected'))parts.push(`${count('rejected')} rejected with a reason`);
+    return {kind:'seat',mode:'shift',items:items.map((item:any)=>item.id),reason:parts.join('; '),trigger:count('rejected')?'rejection':count('answered')?'answer':'bank-feed',actor:'dispatcher'};
+  }
+  const phrase=options.colleaguePhrase??argonPhrase();
+  let seatTicking=false;
+  async function seatTick(){
+    if(seatTicking)return;seatTicking=true;
+    try{
+      for(const id of [...seatWorlds]){
+        let world:any;try{world=store.world(id);}catch{seatWorlds.delete(id);continue;}
+        if(slack&&store.get('slack-bindings',id)?.enabled)void slack.reconcile(id);
+        if(world.seat?.simulation?.colleagues){
+          try{const acted=await colleagueTick(id,world,workCommand,phrase);if(acted){store.audit(id,'colleague.acted',{phrased_by:acted.phrased_by},'simulated-colleague');world=store.world(id);}}
+          catch(error){store.audit(id,'colleague.failed',{error:String(error)},'simulated-colleague');}
+        }
+        if(!world.seat?.autonomy?.enabled)continue;
+        if(world.workItems?.some((item:any)=>item.state==='approved'&&item.posting_error)&&(world.faults?.netsuite?.mode??'healthy')==='healthy'&&(world.faults?.ledger?.mode??'healthy')==='healthy'){
+          try{workCommand(id,{type:'work_retry_posting'},GATEWAY as any,`retry:${world.revision}`,crypto.randomUUID());world=store.world(id);}catch{}
+        }
+        const status=seatStatus(id)!;
+        if(!status.agent_available||status.running_run||status.missing_connections.length||status.retry_at||status.runs_last_hour>=status.max_runs_per_hour)continue;
+        const plan=nextSeatRun(id,world);if(!plan)continue;
+        try{launchRun(id,plan);stateFor(id).starts=[...stateFor(id).starts.filter(at=>at>Date.now()-3_600_000),Date.now()];}
+        catch(error){store.audit(id,'seat.launch_failed',{error:String(error)},'dispatcher');}
+      }
+    }finally{seatTicking=false;}
+  }
+  let seatTimer:ReturnType<typeof setInterval>|undefined;
+  const seatInterval=options.seatIntervalMs??2000;
+  if(seatInterval>0){seatTimer=setInterval(()=>{void seatTick().catch(error=>store.audit('_service','seat.dispatch_error',{error:String(error)}));},seatInterval);seatTimer.unref();}
   async function dispatch(request: Request, actor: Actor | undefined, requestId: string): Promise<Response> {
     const url = new URL(request.url), path = url.pathname, parts = path.split('/').filter(Boolean), method = request.method;
     if (path === '/health') return json({ service: 'finance-world', runtime: `bun/${Bun.version}`, router: 'vercel-labs/emulate', synthetic: true, version: 1, worlds: store.worlds().length });
@@ -150,13 +278,14 @@ export async function createService(options: ServiceOptions = {}) {
     }
     if (path === '/api/bootstrap' && method === 'GET') {
       requireController(actor);
-      return json({ worlds: store.worlds().map(({ id, name, kind, now, revision }) => ({ id, name, kind, now, revision })), scenarios: scenarioCatalog, systems: systemCatalog, agent: config(),generator:generationConfig() });
+      return json({ worlds: store.worlds().map(({ id, name, kind, now, revision }) => ({ id, name, kind, now, revision })), scenarios: scenarioCatalog, systems: systemCatalog, agent: config(),generator:generationConfig(), slack: slack ? { available: true, ...slack.status() } : { available: false, reason: slackSetup.reason } });
     }
     if (path === '/api/oauth/clients' && method === 'POST') { requireController(actor);const input=await body(request),authorized=currentActor(request,actor);requireController(authorized);return json(oauth.register(input),201); }
     if (path === '/api/worlds' && method === 'POST') {
       requireController(actor); const input = await body(request);actor=currentActor(request,actor);requireController(actor);
       const world = createWorld(input, 'world-' + crypto.randomUUID()),creator=actor.id;
       store.transaction(() => { store.save(world); store.audit(world.id, 'world.created', { scenario: input, summary: summarize(world) }, creator, requestId); });
+      if (world.seat) seatWorlds.add(world.id);
       return json(snapshot(world.id), 201);
     }
     if (path === '/api/generate' && method === 'POST') {
@@ -269,27 +398,47 @@ export async function createService(options: ServiceOptions = {}) {
         do { page = store.events(id, after, 1000); rows.push(...page); after = page.at(-1)?.seq ?? after; } while (page.length === 1000);
         return new Response(rows.map(r => JSON.stringify(r)).join('\n') + '\n', { headers: { 'Content-Type': 'application/x-ndjson', 'Content-Disposition': `attachment; filename="${id}-audit.jsonl"` } });
       }
+      if (route.startsWith('work') || route === 'why') {
+        if (!world.seat) throw new ServiceError(404, 'no_seat', 'This company has no cash-application seat.');
+        if (!actor || !['agent', 'controller'].includes(actor.role)) throw new ServiceError(403, 'work_access_denied');
+        // The seat reads the bank and the ERP only through connections the controller granted.
+        const seatRead = (systems: string[]) => { if (actor!.role === 'agent') for (const system of systems) oauth.require(id, system, 'read', actor!); };
+        const find = (rows: any[], key: any, label: string) => rows.find(row => row.id === key) ?? (() => { throw new ServiceError(404, 'not_found', `${label} not found`); })();
+        if (route === 'work/briefing' && method === 'GET') return json({ ...workBriefing(world), dispatcher: seatStatus(id) });
+        if (route === 'work/items' && method === 'GET') { const state = url.searchParams.get('state'); return json({ data: world.workItems.filter((item: any) => !state || item.state === state) }); }
+        if (parts[3] === 'work' && parts[4] === 'items' && parts.length === 6 && method === 'GET') { seatRead(['bank', 'netsuite']); return json(workItemView(world, decodeURIComponent(parts[5]), { find })); }
+        if (route === 'work/precedents' && method === 'GET') { const q = url.searchParams; return json({ data: precedentSearch(world, { customer_id: q.get('customer_id') ?? undefined, payer: q.get('payer') ?? undefined, kind: q.get('kind') ?? undefined, text: q.get('text') ?? undefined, limit: integer(q.get('limit'), 20, 1, 100) }) }); }
+        if (route === 'work/policies' && method === 'GET') return json({ data: world.policies });
+        if (route === 'work/history' && method === 'POST') {
+          seatRead(['netsuite']); const input = await body(request);
+          try { return json(await queryHistory(world, input.sql, { limit: typeof input.limit === 'number' ? input.limit : undefined })); }
+          catch (error) { if (error instanceof HistoryQueryError) throw new ServiceError(error.status, error.code, error.message); throw error; }
+        }
+        if (route === 'work' && method === 'POST') { const input = await body(request), authorized = currentActor(request, actor); scoped(authorized, id); return json(workCommand(id, input, authorized!, request.headers.get('Idempotency-Key') ?? '', requestId)); }
+        if (route === 'why' && method === 'GET') { const subject = url.searchParams.get('subject') ?? ''; if (!subject || subject.length > 160) throw new ServiceError(400, 'subject_required'); return json({ ...whyTimeline(world, subject), denied: store.queryEvents(id, { order: 'asc', limit: 50, scope: 'errors', q: subject }).data.filter((event: any) => event.type === 'work.denied') }); }
+        if (route === 'work/score' && method === 'GET') { requireController(actor); return json(scoreCashApplication(world)); }
+        if (route === 'work/status' && method === 'GET') return json(seatStatus(id));
+        if (route === 'work/slack' && method === 'GET') { requireController(actor); return json({ available: Boolean(slack), ...(slack ? { status: slack.status(), binding: store.get('slack-bindings', id) ?? { enabled: false } } : { reason: slackSetup.reason }) }); }
+        if (route === 'work/slack' && method === 'POST') {
+          requireController(actor); const input = await body(request); actor = currentActor(request, actor); requireController(actor);
+          if (!slack) throw new ServiceError(503, 'slack_unavailable', slackSetup.reason ?? 'Slack is not configured.');
+          if (typeof input.enabled !== 'boolean') throw new ServiceError(400, 'invalid_slack_binding');
+          const binding = slack.bind(id, input.enabled); store.audit(id, 'slack.binding_changed', binding, actor.id, requestId);
+          if (input.enabled) void slack.reconcile(id);
+          return json({ binding, status: slack.status() });
+        }
+        throw new ServiceError(404, 'not_found');
+      }
       if (route === 'agent' && method === 'POST') {
-        requireController(actor); if (!config().available) throw new ServiceError(503, 'agent_unavailable', config().reason);
+        requireController(actor); if (!config().available && !(world.seat && options.seatRunner)) throw new ServiceError(503, 'agent_unavailable', config().reason);
         const input = await body(request);actor=currentActor(request,actor);requireController(actor);const instruction = input.instruction ?? 'Investigate the current scenario, carry out authorized financial work through the connected systems, and report remaining blockers with evidence.';
         if (typeof instruction !== 'string' || instruction.length > 12000 || instruction.length < 5) throw new ServiceError(400, 'invalid_instruction');
-        if (store.all('runs').some(r => r.world === id && r.status === 'running')) throw new ServiceError(409, 'agent_already_running');
-        const runId = crypto.randomUUID(), token = secret(), tokenHash = hash(token), startedAt = new Date().toISOString(), run = { id: runId, world: id, status: 'running', instruction, model: config().model, started_at: startedAt, output: '', progress: compactRunProgress({ type: 'agent.started' }, startedAt) };
-        store.put('agent-tokens', tokenHash, { world: id, actor: `agent-world:${id}`, runId, expires_at: Date.now() + 900_000 });
-        store.put('runs', runId, run); store.audit(id, 'agent.started', { run_id: runId, instruction, model: run.model }, actor.id, requestId);
-        const abort = new AbortController();
-        const promise = runAgent({ worldId: id, baseUrl, token, instruction, signal: abort.signal, onEvent: e => {
-          const current = store.get('runs', runId) ?? run, updated = withRunProgress(current, e, new Date().toISOString());
-          if (updated !== current) store.put('runs', runId, updated);
-          store.audit(id, 'agent.trace', { run_id: runId, ...e }, `agent:${runId}`);
-        } }).then(result => {
-          store.put('runs', runId, finishRun(store.get('runs', runId) ?? run, 'completed', new Date().toISOString(), result)); store.audit(id, 'agent.completed', { run_id: runId, ...result }, `agent:${runId}`);
-        }).catch(error => {
-          const safe = redact(String(error)).replaceAll(token, '[REDACTED]');
-          store.put('runs', runId, finishRun(store.get('runs', runId) ?? run, abort.signal.aborted ? 'cancelled' : 'failed', new Date().toISOString(), { error: safe })); store.audit(id, 'agent.failed', { run_id: runId, error: safe }, `agent:${runId}`);
-        }).finally(() => { store.delete('agent-tokens', tokenHash); workers.delete(runId); });
-        workers.set(runId, { abort, promise });
-        return json(run, 202);
+        // A company with a seat is worked by the seat; an instruction becomes a shift note.
+        if (world.seat) {
+          const queue=agentQueue(world).slice(0,6).map((item:any)=>item.id),mode:SeatMode=world.seat.onboarding?.status==='pending'?'onboarding':'shift';
+          return json(launchRun(id,{kind:'seat',mode,items:queue,reason:`Requested by the controller: ${instruction.slice(0,600)}`,trigger:'controller',actor:actor.id,requestId}),202);
+        }
+        return json(launchRun(id,{kind:'instruction',instruction,actor:actor.id,requestId}), 202);
       }
       if (parts[3] === 'agent' && parts[5] === 'cancel' && method === 'POST') {
         requireController(actor); const run = store.get('runs', parts[4]); if (!run || run.world !== id) throw new ServiceError(404, 'run_not_found');
@@ -390,8 +539,8 @@ export async function createService(options: ServiceOptions = {}) {
   }
   const definition = defineEmulator({ name: 'finance-world', state: () => ({ schema_version: 1 }), setup({ app }) { app.use('*', c => handler(c.req.raw)); } });
   const runtime = await createEmulator({ service: definition, listen: false, inspector: false, baseUrl });
-  const abortWork = () => { if (deliveryTimer) clearInterval(deliveryTimer); for (const w of workers.values()) w.abort.abort(); for (const a of generations.values()) a.abort.abort(); };
-  return { fetch: runtime.fetch.bind(runtime), store, oauth, hooks, baseUrl, abortWork, async close() { abortWork(); await hooks.close(); await Promise.allSettled([...workers.values(),...generations.values()].map(w => w.promise)); await runtime.close(); store.close(); } };
+  const abortWork = () => { if (deliveryTimer) clearInterval(deliveryTimer); if (seatTimer) clearInterval(seatTimer); slack?.stop(); for (const w of workers.values()) w.abort.abort(); for (const a of generations.values()) a.abort.abort(); };
+  return { fetch: runtime.fetch.bind(runtime), store, oauth, hooks, baseUrl, abortWork, seatTick, workCommand, seatStatus, launchRun, slack, async close() { abortWork(); await hooks.close(); await Promise.allSettled([...workers.values(),...generations.values()].map(w => w.promise)); await runtime.close(); store.close(); } };
 }
 
 export async function startServer(options: ServiceOptions & { port?: number } = {}) {

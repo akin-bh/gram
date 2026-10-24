@@ -5,6 +5,7 @@ import { renderMarkdown } from './markdown.js';
 import { renderAuditView, renderAuditRecord, cachedAuditEvent, invalidateAudit } from './audit-view.js';
 import { describeAuditEvent } from './audit-tree.js';
 import { mountAgentStatus, describeAgentStatus } from './agent-status.js';
+import { renderWork, renderWorkItem } from './work-view.js';
 import 'dialkit/vanilla/styles.css';
 import './style.css';
 
@@ -82,8 +83,8 @@ const money = cents => new Intl.NumberFormat('en-US', { style: 'currency', curre
 const list = value => Array.isArray(value) ? value : [];
 const root = new Surface(document.querySelector('#app'));
 const state = { boot: null, snapshot: null, world: '', view: 'overview', busy: false, notice: 'Loading…', draft: {}, finance: 'payments', recordSystem: 'gmail', recordFeed: 'message', records: null, detail: null, page: {}, search: {}, compose: null, generated: null, files: [] };
-const views = ['overview', 'connections', 'mailbox', 'finance', 'procurement', 'sources', 'agent', 'delivery', 'audit', 'create', 'documents', 'favorites', 'settings'];
-const labels = { overview: 'Overview', connections: 'Connections', mailbox: 'Inbox', finance: 'Finance', procurement: 'Procurement', sources: 'Sources', agent: 'Agent', delivery: 'Delivery', audit: 'Audit', create: 'New company', documents: 'Files', favorites: 'Favorites', settings: 'Settings' };
+const views = ['overview', 'work', 'connections', 'mailbox', 'finance', 'procurement', 'sources', 'agent', 'delivery', 'audit', 'create', 'documents', 'favorites', 'settings'];
+const labels = { overview: 'Overview', work: 'Work', connections: 'Connections', mailbox: 'Inbox', finance: 'Finance', procurement: 'Procurement', sources: 'Sources', agent: 'Agent', delivery: 'Delivery', audit: 'Audit', create: 'New company', documents: 'Files', favorites: 'Favorites', settings: 'Settings' };
 let rail, content, statusControl, detailSurface, resultControl;
 const workspace = new WorkspaceStore();
 const tabState = new Map(), transientRecords = new Map();
@@ -237,11 +238,18 @@ async function act(input) {
   notify(pretty(input.type) + ' · ' + (result.result?.operation?.status || result.result?.status || 'saved'));
   return result;
 }
+/** The snapshot, plus the seat's dispatcher and Slack status for companies with a seat. */
+async function loadSnapshot(id) {
+  const snapshot = await api(path()); if (state.world !== id) return;
+  const [status, slack] = snapshot.world.seat ? await Promise.all([api(path('/work/status')), api(path('/work/slack'))]) : [null, null];
+  if (state.world !== id) return;
+  state.snapshot = snapshot; state.seatStatus = status; state.slackStatus = slack; return snapshot;
+}
 async function refresh(background = false) {
   const id = state.world;
   if (!background && id) invalidateAudit(id);
   if (id) {
-    const snapshot = await api(path()); if (state.world !== id) return; state.snapshot = snapshot;
+    const snapshot = await loadSnapshot(id); if (!snapshot) return;
     for (const run of snapshot.runs) if (run.status !== 'running') stoppingRuns.delete(run.id);
     for (const entry of agentStatusViews) {
       if (entry.world !== id) continue;
@@ -370,7 +378,7 @@ function render() {
         if (!state.snapshot && !['create', 'settings'].includes(tab.view)) renderStart();
         else if (tab.kind === 'record') renderRecord(tab);
         else if (tab.kind === 'compose') { state.compose ||= 'send_email'; const composer = content.folder('New message', { root: true, wide: true }); composer.host.parentElement.classList.add('composer'); renderMailForm(composer); }
-        else ({ overview: renderOverview, connections: renderConnections, mailbox: renderMailbox, finance: renderFinance, procurement: renderProcurement, sources: renderSources, agent: renderAgent, delivery: renderDelivery, audit: renderAudit, create: renderCreate, documents: renderDocuments, favorites: renderFavorites, settings: renderSettings })[tab.view]?.() ?? (tab.view.startsWith('start-') ? renderStart() : undefined);
+        else ({ overview: renderOverview, work: renderWorkView, connections: renderConnections, mailbox: renderMailbox, finance: renderFinance, procurement: renderProcurement, sources: renderSources, agent: renderAgent, delivery: renderDelivery, audit: renderAudit, create: renderCreate, documents: renderDocuments, favorites: renderFavorites, settings: renderSettings })[tab.view]?.() ?? (tab.view.startsWith('start-') ? renderStart() : undefined);
       } catch (error) { const errorCard = content.folder('Unable to open view', { root: true }); errorCard.text('Error', error.message); errorCard.buttons([['Retry', refresh]]); }
       scroller.host.scrollTop = scrolls.get(tab.id) || tab.ui?.scroll || 0;
       scroller.host.addEventListener('scroll', () => { const scroll = scroller.host.scrollTop, runtime = tabState.get(context.world + ':' + tab.id); if (runtime) runtime.scroll = scroll; if (activeContext?.tab === tab.id) state.scroll = scroll; workspace.updateTab(context.world, tab.id, { ui: { scroll } }); }, { passive: true });
@@ -433,8 +441,8 @@ function renderSidebar() {
   const scroll = child(rail, 'rail-scroll');
   const nav = child(scroll, 'rail-nav');
   const selected = currentTab();
-  for (const view of ['overview', 'mailbox', 'documents', 'finance', 'procurement']) {
-    const count = view === 'mailbox' ? records('messages').length : view === 'documents' ? records('documents').length : view === 'favorites' ? space().favorites.length : undefined;
+  for (const view of ['overview', ...(world().seat ? ['work'] : []), 'mailbox', 'documents', 'finance', 'procurement']) {
+    const count = view === 'work' ? records('workItems').filter(item => ['proposed', 'needs_info', 'escalated'].includes(item.state)).length || undefined : view === 'mailbox' ? records('messages').length : view === 'documents' ? records('documents').length : view === 'favorites' ? space().favorites.length : undefined;
     nav.action(labels[view], () => go(view), { icon: view === 'documents' ? 'files' : view === 'favorites' ? 'star' : view, active: selected?.view === view && selected.kind === 'view', meta: count, disabled: !state.world && view !== 'overview' });
   }
   const tools = scroll.folder('Tools', { open: false }); tools.host.classList.add('rail-nav');
@@ -647,6 +655,7 @@ function renderRecord(tab) {
   if (tab.collection === 'audit') { renderAuditRecord(content, { ...auditOptions(draft('audit-record', { raw: false }), content), seq: Number(tab.recordId), openEvent: null }); return; }
   const value = resolveRecord(tab);
   if (!value) { const missing = content.folder(tab.collection === 'inspection' ? tab.title : 'Record unavailable', { root: true, wide: true }); if (tab.collection !== 'inspection') missing.text('Record', tab.recordId); missing.buttons([['Open source', () => go(tab.view || 'overview')]]); return; }
+  if (tab.collection === 'workItems') { renderWorkItem(content, workContext(), tab.recordId); return; }
   if (tab.collection === 'runs') {
     const reader = content.folder('Agent', { root: true, wide: true });
     renderAgentResponse(reader, value);
@@ -870,9 +879,10 @@ function renderOverview() {
   for (const approval of pending) {
     const item = approvals.folder(pretty(approval.action?.type || 'Request') + ' · ' + money(approval.amount_minor));
     item.text('Requested by', approval.requested_by); item.text('Request', approval.action);
-    const own = approval.requested_by === 'controller-local';
+    const own = approval.requested_by === 'controller-local', d = draft('approval-' + approval.id, { reason: '' });
     if (own) item.text('Review', 'Independent controller required');
-    item.buttons([['Approve', () => act({ type: 'decide_approval', approval_id: approval.id, decision: 'approve' }), own], ['Reject', () => act({ type: 'decide_approval', approval_id: approval.id, decision: 'reject' }), own]]);
+    item.text('Reason', d.reason, value => d.reason = value, 'Recorded with the decision; required to reject');
+    item.buttons([['Approve', () => act({ type: 'decide_approval', approval_id: approval.id, decision: 'approve', ...(d.reason.trim() ? { reason: d.reason.trim() } : {}) }), own], ['Reject', () => { if (d.reason.trim().length < 3) invalid('Reason', 'Say why; the agent and the audit read it.'); return act({ type: 'decide_approval', approval_id: approval.id, decision: 'reject', reason: d.reason.trim() }); }, own]]);
   }
 }
 function queueKey() { return 'finance-world-connect-queue:' + state.world; }
@@ -1256,6 +1266,18 @@ function renderSources() {
   pane.buttons([['Load first page', () => loadSources()], ['Next source page', () => loadSources(true), !state.records?.next_cursor]]);
   if (state.records) { pane.text('Source results', state.records.total + ' total · ' + state.records.data.length + ' in this page'); browse(content, 'Source records', state.records.data, 'sources'); }
 }
+function workContext() {
+  const work = async input => { const result = await post(path('/work'), input, { headers: { 'Idempotency-Key': crypto.randomUUID() } }); await refresh(); notify(pretty(input.type.replace(/^work_|^policy_|^seat_/, '')) + ' · saved'); return result; };
+  return {
+    world, summary: () => state.snapshot.summary, child, money, pretty, draft, work, api, path, act, worldId: () => state.world, status: () => state.seatStatus, slack: () => state.slackStatus,
+    openItem: item => openRecord({ collection: 'workItems', recordId: item.id, title: item.id + ' · ' + item.title, view: 'work' }),
+    rerender: () => { if (state.busy || rendering) deferredRender = true; else render(); },
+    connect: async missing => { sessionStorage.setItem(queueKey(), JSON.stringify(missing)); await connect(missing[0]); },
+    startShift: async () => { await post(path('/agent'), { instruction: 'Work the queue now.' }); await refresh(); notify('Shift started'); },
+    bindSlack: async enabled => { await post(path('/work/slack'), { enabled }); await refresh(); notify(enabled ? 'Slack connected for this company' : 'Slack disconnected'); },
+  };
+}
+function renderWorkView() { renderWork(content, workContext()); }
 function renderAgent() {
   const pane = content.folder('Task', { root: true, wide: true });
   const config = state.boot.agent;
@@ -1368,7 +1390,7 @@ async function initialize() {
   state.world = state.boot.worlds.some(w => w.id === wanted) ? wanted : state.boot.worlds[0]?.id || '';
   const previous = url.searchParams.get('view') || (url.searchParams.has('connected') ? sessionStorage.getItem('finance-world-return-view') : '') || localStorage.getItem('finance-world-tab');
   state.view = views.includes(previous) ? previous : state.world ? 'overview' : 'create';
-  if (state.world) state.snapshot = await api(path());
+  if (state.world) await loadSnapshot(state.world);
   const tabId = url.searchParams.get('tab'), savedPane = space().panes.find(p => p.tabs.some(t => t.id === tabId));
   if (savedPane) workspace.activateTab(spaceId(), savedPane.id, tabId);
   else if (url.searchParams.has('view') || url.searchParams.has('connected') || !state.world) workspace.openView(spaceId(), state.view, labels[state.view]);
@@ -1385,7 +1407,8 @@ async function initialize() {
   setInterval(async () => {
     if (state.busy || polling) return;
     if (deferredRender && !interacting()) { deferredRender = false; render(); }
-    if (!state.snapshot?.runs.some(run => run.status === 'running')) return;
+    // A seat on duty works without anyone clicking, so its company stays live.
+    if (!state.snapshot?.runs.some(run => run.status === 'running') && !state.snapshot?.world?.seat?.autonomy?.enabled) return;
     polling = true;
     try { await refresh(true); } catch (error) { notify('Refresh failed: ' + error.message, true); }
     finally { polling = false; }

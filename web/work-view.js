@@ -1,0 +1,191 @@
+// The seat's desk: what it is doing, what waits on a person, the policies it works under,
+// and why any record looks the way it does. Every button is a work command with a role check.
+const itemViews = new Map(), whyResults = new Map();
+const percent = value => Math.round(Number(value || 0) * 100) + '%';
+const when = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }) + ' UTC' : '';
+const actorLabel = id => String(id || '').startsWith('agent-world:') ? 'the seat' : String(id).startsWith('slack:') ? 'Slack ' + String(id).slice(6) : String(id).startsWith('sim:') ? String(id).slice(4) + ' (simulated)' : id === 'controller-local' ? 'Controller' : id;
+const states = ['new', 'proposed', 'needs_info', 'answered', 'rejected', 'approved', 'posted', 'escalated', 'scheduled', 'closed'];
+const stateLabels = { new: 'New', proposed: 'Awaiting approval', needs_info: 'Question asked', answered: 'Answered', rejected: 'Rejected', approved: 'Approved', posted: 'Posted', escalated: 'Escalated', scheduled: 'Follow-up scheduled', closed: 'Closed' };
+
+function proposalLines(proposal, money) {
+  if (!proposal) return [];
+  if (proposal.kind === 'reminder') return ['Send reminder: ' + proposal.reminder];
+  const r = proposal.resolution || {};
+  return [
+    ...(r.allocations || []).map(row => 'Apply ' + money(row.amount_minor) + ' to ' + row.invoice_id),
+    ...(r.adjustments || []).map(row => 'Close ' + money(row.amount_minor) + ' of ' + row.invoice_id + ' as ' + row.kind.replaceAll('_', ' ')),
+    ...(r.hold_on_account ? ['Hold ' + money(r.unapplied_minor) + ' on account'] : []),
+    ...(r.chase ? ['Send a short-pay notice for ' + money(r.chase.amount_minor) + ' on ' + r.chase.invoice_id] : []),
+  ];
+}
+function decisionControls(parent, item, ctx, question) {
+  const d = ctx.draft('work-decide-' + item.id, { reason: '' });
+  if (item.state === 'proposed') {
+    parent.text('Reason', d.reason, value => d.reason = value, 'Required to reject; the seat reads it');
+    parent.buttons([
+      ['Approve', () => ctx.work({ type: 'work_decide', work_item_id: item.id, decision: 'approve', reason: d.reason.trim() || undefined })],
+      ['Reject', () => { if (d.reason.trim().length < 3) throw Object.assign(Error('Say why. The seat learns from the reason.'), { field: 'Reason' }); return ctx.work({ type: 'work_decide', work_item_id: item.id, decision: 'reject', reason: d.reason.trim() }); }],
+    ]);
+  }
+  if (item.state === 'needs_info' && question) {
+    const a = ctx.draft('work-answer-' + question.id, { answer: '' });
+    if (question.options?.length) parent.buttons(question.options.map(option => [option, () => ctx.work({ type: 'work_answer', question_id: question.id, answer: option })]));
+    parent.text('Answer', a.answer, value => a.answer = value, 'Answer in your own words');
+    parent.buttons([['Send answer', () => { if (a.answer.trim().length < 2) throw Object.assign(Error('Write an answer.'), { field: 'Answer' }); return ctx.work({ type: 'work_answer', question_id: question.id, answer: a.answer.trim() }); }]]);
+  }
+  if (item.state === 'escalated') {
+    const g = ctx.draft('work-guide-' + item.id, { guidance: '' });
+    parent.text('Guidance', g.guidance, value => g.guidance = value, 'Tell the seat what to do, or close it');
+    parent.buttons([
+      ['Return to the seat', () => { if (g.guidance.trim().length < 3) throw Object.assign(Error('Give the seat some guidance.'), { field: 'Guidance' }); return ctx.work({ type: 'work_guide', work_item_id: item.id, guidance: g.guidance.trim() }); }],
+      ['Close', () => { if (g.guidance.trim().length < 3) throw Object.assign(Error('Say how it was resolved.'), { field: 'Guidance' }); return ctx.work({ type: 'work_close', work_item_id: item.id, reason: g.guidance.trim() }); }],
+    ]);
+  }
+  if (item.state === 'approved' && item.posting_error) parent.buttons([['Retry posting', () => ctx.work({ type: 'work_retry_posting' })]]);
+}
+
+export function renderWork(content, ctx) {
+  const w = ctx.world(), s = ctx.summary(), seat = w.seat;
+  if (!seat) { const pane = content.folder('Work', { root: true, wide: true }); pane.text('Seat', 'This company has no autonomous seat. Create a cash-application company to see one at work.').host.classList.add('prose'); return; }
+  const items = w.workItems || [], questions = w.questions || [], policies = w.policies || [], status = ctx.status() || {};
+  const card = content.folder(seat.title + ' · ' + seat.company, { root: true, wide: true });
+  card.text('Seat', seat.one_line).host.classList.add('prose');
+  const metrics = ctx.child(card, 'metrics');
+  for (const [label, value] of [['Posted', s.work.posted], ['Waiting on people', s.work.proposed + s.work.needs_info + s.work.escalated], ['In its queue', s.work.new + s.work.answered + s.work.rejected], ['Policies in force', s.policies_active]]) metrics.text(label, value).host.classList.add('metric');
+  card.toggle('On duty', Boolean(seat.autonomy.enabled), value => ctx.work({ type: 'seat_configure', enabled: value }));
+  card.text('Status', [
+    status.running_run ? 'Working a shift now' : seat.autonomy.enabled ? 'Waiting for work' : 'Off duty',
+    status.missing_connections?.length ? 'Needs connections: ' + status.missing_connections.join(', ') : '',
+    !status.agent_available ? 'Claude is not configured' : '',
+    status.stalled_items?.length ? 'Stalled: ' + status.stalled_items.join(', ') : '',
+    seat.onboarding.status === 'pending' ? 'Onboarding: will learn from ' + (w.cash_history_counts?.receipts ?? 0) + ' historical receipts first' : 'Onboarded ' + when(seat.onboarding.completed_at),
+  ].filter(Boolean).join(' · '));
+  if (status.missing_connections?.length) card.buttons([['Connect ' + status.missing_connections.join(', '), () => ctx.connect(status.missing_connections)]]);
+  card.buttons([['Run a shift now', () => ctx.startShift(), Boolean(status.running_run) || !status.agent_available]]);
+  const settings = card.folder('Autonomy and people', { open: false });
+  settings.text('Posts without a person when', 'An approved policy covers it and confidence ≥ ' + percent(seat.autonomy.min_confidence) + ', up to ' + ctx.money(seat.autonomy.max_auto_minor));
+  settings.slider('Confidence bar (%)', Math.round(seat.autonomy.min_confidence * 100), 50, 100, 1, value => ctx.work({ type: 'seat_configure', min_confidence: value / 100 }));
+  settings.toggle('Simulated colleagues (practice only)', Boolean(seat.simulation?.colleagues), value => ctx.work({ type: 'seat_configure', colleagues: value }));
+  const slack = ctx.slack();
+  if (slack?.available) settings.toggle('Ask and approve in Slack' + (slack.status?.connected ? '' : ' (connecting…)'), Boolean(slack.binding?.enabled), value => ctx.bindSlack(value));
+  else settings.text('Slack', slack?.reason || 'Not configured');
+  settings.text('Reports to', seat.people.map(person => person.name + ' (' + person.title + ')').join(', '));
+  settings.text('Access', 'Reads ' + seat.access.reads.join(', ') + '. Writes ' + seat.access.writes.join('; ') + '. Cannot ' + seat.access.cannot.join(', ') + '.');
+
+  const waiting = items.filter(item => ['proposed', 'needs_info', 'escalated'].includes(item.state) || (item.state === 'approved' && item.posting_error));
+  const inbox = content.folder('Needs you · ' + waiting.length, { root: true, wide: true });
+  if (!waiting.length) inbox.text('Inbox', 'Nothing is waiting on a person.').host.classList.add('prose');
+  waiting.forEach((item, index) => {
+    const question = questions.find(row => row.id === item.open_question_id), folder = inbox.folder(item.id + ' · ' + stateLabels[item.state] + ' · ' + item.title, { open: index < 3 });
+    if (item.state === 'needs_info' && question) folder.text('The seat asks', question.question).host.classList.add('prose');
+    if (item.state === 'proposed') {
+      folder.text('Proposal', proposalLines(item.proposal, ctx.money).join('\n'));
+      folder.text('Confidence', percent(item.proposal.confidence) + ' · ' + (item.proposal.basis || []).map(row => row.why).join('; '));
+      if (item.proposal.gaps?.length) folder.text('Why it needs you', item.proposal.gaps.join('\n'));
+      folder.text('Seat\'s reason', item.proposal.reason).host.classList.add('prose');
+    }
+    if (item.state === 'escalated') folder.text('Escalated', item.escalation?.reason || '').host.classList.add('prose');
+    if (item.posting_error) folder.text('Posting blocked', item.posting_error.message + ' The approval stands; the gateway retries.');
+    decisionControls(folder, item, ctx, question);
+    folder.action('Open ' + item.id, () => ctx.openItem(item), { icon: 'external', className: 'record-row' });
+  });
+
+  const proposed = policies.filter(row => row.status === 'proposed'), active = policies.filter(row => row.status === 'active');
+  const policyPane = content.folder('Policies · ' + active.length + ' in force' + (proposed.length ? ' · ' + proposed.length + ' proposed' : ''), { root: true, wide: true });
+  if (!policies.length) policyPane.text('Policies', seat.onboarding.status === 'pending' ? 'None yet. When the seat goes on duty it learns them from the company\'s history and proposes them here.' : 'None').host.classList.add('prose');
+  for (const policy of proposed) {
+    const folder = policyPane.folder(policy.id + ' v' + policy.version + ' · ' + policy.title, { open: true }), d = ctx.draft('policy-' + policy.id + '@' + policy.version, { reason: '' });
+    folder.text('Rule', policy.statement).host.classList.add('prose');
+    folder.text('Backtest', policy.backtest.support + ' cases agree · ' + policy.backtest.contrary + ' contrary' + (policy.backtest.contrary_examples?.length ? ' (' + policy.backtest.contrary_examples.join(', ') + ')' : '') + (policy.backtest.note ? ' · ' + policy.backtest.note : ''));
+    folder.text('Why', policy.rationale).host.classList.add('prose');
+    if (policy.evidence?.queries?.length) folder.folder('Evidence', { open: false }).text('Queries', policy.evidence.queries.map(query => query.sql + '\n→ ' + query.finding).join('\n\n'));
+    folder.text('Reason', d.reason, value => d.reason = value, 'Required to reject');
+    folder.buttons([
+      ['Approve policy', () => ctx.work({ type: 'policy_decide', policy_id: policy.id, version: policy.version, decision: 'approve', reason: d.reason.trim() || undefined })],
+      ['Reject policy', () => { if (d.reason.trim().length < 3) throw Object.assign(Error('Say why.'), { field: 'Reason' }); return ctx.work({ type: 'policy_decide', policy_id: policy.id, version: policy.version, decision: 'reject', reason: d.reason.trim() }); }],
+    ]);
+  }
+  for (const policy of active) {
+    const folder = policyPane.folder(policy.id + ' v' + policy.version + ' · ' + policy.title, { open: false });
+    folder.text('Rule', policy.statement).host.classList.add('prose');
+    folder.text('Evidence', policy.backtest.support + ' cases agree · ' + policy.backtest.contrary + ' contrary · approved by ' + actorLabel(policy.decided_by) + (policy.decision_reason ? ': ' + policy.decision_reason : ''));
+    const d = ctx.draft('retire-' + policy.id, { reason: '' });
+    folder.text('Retire reason', d.reason, value => d.reason = value);
+    folder.buttons([['Retire policy', () => { if (d.reason.trim().length < 3) throw Object.assign(Error('Say why.'), { field: 'Retire reason' }); return ctx.work({ type: 'policy_retire', policy_id: policy.id, reason: d.reason.trim() }); }]]);
+  }
+
+  const handoff = (w.handoffs || []).at(-1);
+  if (handoff) {
+    const pane = content.folder('Last handoff · ' + when(handoff.at), { root: true, wide: true });
+    pane.text('Summary', handoff.summary).host.classList.add('prose');
+    if (handoff.open_items?.length) pane.text('Open', handoff.open_items.join('\n'));
+    if (handoff.next_steps?.length) pane.text('Next', handoff.next_steps.join('\n'));
+  }
+
+  const queue = content.folder('All work · ' + items.length, { root: true, wide: true });
+  queue.text('By state', states.filter(state => s.work[state]).map(state => stateLabels[state] + ' ' + s.work[state]).join(' · ') || 'No work yet');
+  for (const item of items.slice().reverse().slice(0, 30)) queue.action(item.id + ' · ' + item.title, () => ctx.openItem(item), { icon: 'finance', className: 'record-row', meta: stateLabels[item.state] + (item.decision?.kind === 'policy' ? ' · by policy' : item.decision?.kind === 'human' ? ' · by ' + actorLabel(item.decision.by) : '') });
+
+  const feed = content.folder('Bank feed', { root: true, wide: true });
+  const pending = (w.bankFeed || []).filter(row => !row.delivered_at);
+  feed.text('Next sync', pending.length ? pending.length + ' lines scheduled · next ' + when(pending[0].arrives_at) : 'No scheduled lines');
+  if (pending.length) feed.buttons([['Advance to the next sync', () => ctx.act(pending[0].arrives_at > w.now ? { type: 'advance_to', at: pending[0].arrives_at } : { type: 'advance_time', hours: 1 })]]);
+  const line = ctx.draft('bank-line', { payer: '', amount: '', memo: '', channel: 'ach' }), form = feed.folder('Record a bank line', { open: false });
+  form.text('Payer name', line.payer, value => line.payer = value, 'As the bank shows it, or blank');
+  form.text('Amount (USD)', line.amount, value => line.amount = value, '57975.00');
+  form.text('Memo', line.memo, value => line.memo = value, 'WIRE IN … INV 2003');
+  form.select('Channel', line.channel, ['ach', 'wire', 'check'].map(value => ({ value, label: value.toUpperCase() })), value => line.channel = value);
+  form.buttons([['Record bank line', async () => {
+    const cents = Math.round(Number(line.amount) * 100);
+    if (!/^\d+(\.\d{1,2})?$/.test(line.amount.trim()) || cents <= 0) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: 'Amount (USD)' });
+    const reference = 'JPM-' + String(Date.now()).slice(-8);
+    await ctx.act({ type: 'record_bank_receipt', bank_reference: reference, amount_minor: cents, channel: line.channel, payer_name: line.payer.trim(), memo: line.memo.trim(), external_event_id: 'console:' + reference });
+    Object.assign(line, { payer: '', amount: '', memo: '' });
+  }]]);
+
+  const why = content.folder('Why?', { root: true, wide: true }), q = ctx.draft('why', { subject: '' });
+  why.text('Record', q.subject, value => q.subject = value, 'INV-2003, WI-5532, JPM-88310442, pol-001…');
+  why.buttons([['Explain', async () => { if (!q.subject.trim()) throw Object.assign(Error('Enter a record ID.'), { field: 'Record' }); whyResults.set(ctx.worldId() + ':' + q.subject.trim(), await ctx.api(ctx.path('/why?subject=' + encodeURIComponent(q.subject.trim())))); ctx.rerender(); }]]);
+  const result = whyResults.get(ctx.worldId() + ':' + q.subject.trim());
+  if (result) {
+    why.text('Timeline', result.timeline.length ? result.timeline.map(row => when(row.at) + ' · ' + actorLabel(row.actor) + ' (' + row.role + ') · ' + row.action + (row.allowed === false ? ' · BLOCKED' : '') + (row.why ? ' — ' + row.why : '')).join('\n') : 'No work touched this record.');
+    if (result.denied?.length) why.text('Denied attempts', result.denied.map(row => row.at + ' · ' + row.actor + ' · ' + row.data.action + ' · ' + row.data.code).join('\n'));
+  }
+}
+
+export function renderWorkItem(content, ctx, itemId) {
+  const key = ctx.worldId() + ':' + itemId + ':' + ctx.world().revision, cached = itemViews.get(key);
+  if (!cached) {
+    const loading = content.folder(itemId, { root: true, wide: true }); loading.text('Status', 'Loading…');
+    itemViews.set(key, { loading: true });
+    ctx.api(ctx.path('/work/items/' + encodeURIComponent(itemId))).then(view => { itemViews.set(key, { view }); ctx.rerender(); }, error => { itemViews.set(key, { error: error.message }); ctx.rerender(); });
+    return;
+  }
+  if (cached.loading) { content.folder(itemId, { root: true, wide: true }).text('Status', 'Loading…'); return; }
+  if (cached.error) { content.folder(itemId, { root: true, wide: true }).text('Error', cached.error); return; }
+  const { item, receipt, features, candidate_invoices: candidates, remittances, history, similar_precedents: precedents, questions, timeline } = cached.view, money = ctx.money;
+  const head = content.folder(item.id + ' · ' + stateLabels[item.state], { root: true, wide: true });
+  if (receipt) head.text('Bank line', receipt.bank_reference + ' · ' + receipt.channel.toUpperCase() + ' · ' + money(receipt.amount_minor) + ' · ' + (receipt.payer_name || 'no payer name') + ' · memo “' + (receipt.memo || '—') + '” · posted ' + when(receipt.posted_at));
+  else head.text('Invoice', item.subject_id + ' · ' + money(item.amount_minor || 0) + ' open');
+  if (item.proposal) {
+    const proposal = head.folder('Proposal ' + item.proposal.id + ' · confidence ' + percent(item.proposal.confidence), { open: true });
+    proposal.text('Lines', proposalLines(item.proposal, money).join('\n'));
+    proposal.text('Confidence basis', (item.proposal.basis || []).map(row => row.factor + ' ' + percent(row.score) + ': ' + row.why).join('\n') + '\nSeat\'s own estimate: ' + percent(item.proposal.agent_confidence));
+    proposal.text('Policies', (item.proposal.policies || []).map(row => row.id + ' v' + row.version + ' (' + row.kind + ')').join(', ') || 'None cover it');
+    if (item.proposal.gaps?.length) proposal.text('Why a person decides', item.proposal.gaps.join('\n'));
+    proposal.text('Reason', item.proposal.reason).host.classList.add('prose');
+  }
+  if (item.last_rejection) head.text('Last rejection', item.last_rejection.by + ': ' + item.last_rejection.reason);
+  decisionControls(head, item, ctx, questions?.find(row => row.id === item.open_question_id));
+  if (features) {
+    const evidence = content.folder('Evidence', { root: true, wide: true });
+    evidence.text('References', (features.memo_refs?.length ? 'Memo cites ' + features.memo_refs.join(', ') : 'Memo cites no invoice') + (remittances?.length ? ' · remittance lists ' + remittances.flatMap(row => row.rows.map(line => line.invoice_id + (line.deduction_code ? ' (' + line.deduction_code + ' ' + money(line.deduction_minor) + ')' : ''))).join(', ') : ''));
+    evidence.text('Payer', (features.payer.name_matches.length ? 'Matches ' + features.payer.name_matches.join(', ') : 'Matches no customer name') + (features.payer.paid_before.length ? ' · has paid ' + features.payer.paid_before.map(row => row.customer_id + ' ×' + row.count).join(', ') : ''));
+    evidence.text('Candidate invoices', candidates.map(row => row.invoice_id + ' · ' + row.customer_name + ' · ' + money(row.open_minor) + ' open · ' + row.reasons.join(', ')).join('\n') || 'None');
+    if (history?.treatments?.length) evidence.text('How this customer was handled', history.receipts + ' receipts · ' + history.treatments.map(row => row.treatment + ' ×' + row.count + (row.gap_range ? ' (' + row.gap_range.join('–') + ')' : '')).join(' · '));
+    if (precedents?.length) evidence.text('Earlier decisions by people', precedents.map(row => when(row.at) + ' · ' + actorLabel(row.human.by) + ' ' + row.human.decision + ': ' + row.human.reason).join('\n'));
+  }
+  const log = content.folder('Timeline', { root: true, wide: true });
+  log.text('Transitions', timeline.map(row => when(row.at) + ' · ' + actorLabel(row.actor) + ' (' + row.role + ') · ' + row.action + (row.allowed === false ? ' · BLOCKED' : '') + (Object.keys(row.diff || {}).length ? ' · ' + Object.entries(row.diff).map(([field, [from, to]]) => field + ': ' + (from ?? '∅') + ' → ' + (to ?? '∅')).join(', ') : '') + (row.reason ? '\n    ' + row.reason : '')).join('\n'));
+  for (const question of questions || []) log.text('Question ' + question.id, question.question + (question.status === 'answered' ? '\n→ ' + actorLabel(question.answered_by) + ': ' + question.answer : ' (' + question.status + ')'));
+}

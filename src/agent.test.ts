@@ -96,6 +96,11 @@ test('config exposes availability but never credentials, and missing configurati
     expect(JSON.stringify(config).includes('fake-test-credential')).toBe(false);
     writeFileSync(envFile, 'ANTHROPIC_API_KEY=\n');
     expect(loadAgentConfig().available).toBe(false);
+    // A copy of .env.example: an empty key must not take the following comment line as its value.
+    writeFileSync(envFile, 'ANTHROPIC_API_KEY=\n\n# Optional default world generator.\nGEMINI_API_KEY=\n');
+    expect(loadAgentConfig().available).toBe(false);
+    writeFileSync(envFile, '# Keys\r\nANTHROPIC_API_KEY=fake-test-credential\r\nGEMINI_API_KEY=\r\n');
+    expect(loadAgentConfig().available).toBe(true);
   } finally {
     if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = previousKey;

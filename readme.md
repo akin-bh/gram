@@ -1,10 +1,102 @@
 # gram
 
+**gram is the cash-application accountant at Kestrel Brewing.** It applies every incoming customer payment to the invoices it pays. It books a short-pay only under a policy it learned from the company's own records, and when it is not sure it asks the AR lead, in Slack or in the console. People approve, a gateway posts, and every step goes into an append-only log that can answer "why?" months later.
+
+**The seat in one line:** gram fills Kestrel Brewing's cash-application seat, the accountant who applies customer payments, and chases the short-pays it cannot justify.
+
+![The Work view: the seat, its status, and what waits on a person](docs/gram-work.png)
+
+## The seat
+
+Kestrel Brewing is a regional brewery. It sells kegs and cases to bars, hotels, a stadium, grocery chains and two distributors, and they pay by ACH, wire and lockbox check. Its receivables corner is messy in the ordinary ways:
+
+- **Wires and memos.** Wires arrive short by intermediary bank fees, and one wire can pay several invoices.
+- **Payers.** A parent company pays for its three bars.
+- **Deductions.** The stadium nets returned keg deposits. Grocery chains take 2/10 discounts, sometimes after the ten days are up.
+- **Unclear cash.** A new customer short-pays with no reason, a lockbox deposit has no payer, and a customer pays the same invoice twice.
+- **A new code.** A distributor starts deducting a promotion code nobody has seen before.
+
+What the seat does, and where it lives in the code:
+
+| A finance team needs | How gram does it | Code |
+|---|---|---|
+| **A named seat with limited access** | The seat profile lists its duties, who it reports to and what it can touch. It reads the bank, NetSuite and Gmail only through connections the controller granted. It cannot approve, post, move money, change policy or change time. | [`src/cash-application.ts`](src/cash-application.ts) `w.seat`, [`src/work.ts`](src/work.ts) `ROLES` |
+| **A system of work, not just records** | Work items, decisions with reasons, questions and answers, approvals with reasons, learned policies, precedents, and an append-only transition log. Each transition stores the actor, the state diff, the reason and the evidence. | [`src/work.ts`](src/work.ts) |
+| **It learns the job instead of being taught** | Nothing is written down for it. At onboarding it reads a year of imported receipts and applications through read-only SQL and proposes policies. The gateway backtests every rule against history and people's decisions, and the controller sees the supporting and contrary cases before approving. | [`src/history-sql.ts`](src/history-sql.ts), `backtestRule` |
+| **It improves with every correction** | Answers, rejections and corrections by people become precedents. When people have settled a kind of case, the seat proposes a policy citing those precedents. After approval, the next case posts without anyone being asked. | `recordPrecedent`, `policy_propose` |
+| **It picks up work on its own** | The morning bank sync turns each new line into a work item. A dispatcher launches the seat when work is waiting: new lines, an answer, a rejection, or a follow-up coming due. Nobody types an instruction. | [`src/server.ts`](src/server.ts) `seatTick` |
+| **It remembers between runs** | Each run starts from a briefing (its queue, the policies in force, recent feedback from people, the last handoffs) and ends by writing a handoff. A follow-up set in October wakes up in November. | `workBriefing`, `advanceWork` |
+| **It asks at the right moment and handles a no** | Confidence is computed from evidence: invoice references, payer identity, and how people handled the same gap before. The seat's own estimate can only lower it. Anything a policy does not cover, or below 90%, waits for a person. An answer or a rejection with its reason puts the item back in the seat's queue. | `assessConfidence`, `evaluateCoverage` |
+
+Limits are enforced in code, not by the prompt:
+
+- **Roles.** A role table decides who may create, propose, ask, answer, approve, reject, correct, decide policy and post. Whoever proposes cannot approve.
+- **Hard checks on every resolution.** Nothing applies more cash than arrived, closes more than an invoice owes, nets kegs that never came back, touches an invoice that is already paid, or leaves cash unapplied without saying so.
+- **Denied attempts are audited** as `work.denied` in the hash-chained log.
+- **Connections gate the seat.** Revoke the bank connection and the seat can neither read nor be launched.
+
+The seat is a [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) run ([`src/seat.ts`](src/seat.ts)). Its prompt is about 600 words describing the job and its boundaries, and its tools are CRUD on the work: `get_briefing`, `get_work_item`, `search_precedents`, `query_history`, `read_attachment`, `propose_resolution`, `ask_question`, `escalate`, `propose_policy`, `write_handoff`. The thirteen older scenario families keep the general-purpose agent described below.
+
+### Proof it works
+
+The benchmark is a planted month of 14 bank lines with an answer key ([`PLANTED`](src/cash-application.ts)). Dana (AR lead) and the controller are simulated colleagues. They decide from the answer key, and Gemini Argon phrases their replies ([`src/colleague.ts`](src/colleague.ts)). Precision of automation is the share of applications posted without a person that match the answer key.
+
+| | Scripted baseline | Claude seat, run 1 | Claude seat, run 2 |
+|---|---|---|---|
+| Precision of automation | 100% (4/4) | 100% (8/8) | 100% (7/7) |
+| Posted without a person | 29% | 57% | 50% |
+| Posted correctly in the end | 14/14 | 14/14 | 14/14 |
+| Deferred to a person when unsure | 4/4 | 4/4 (asked first 1/4) | 4/4 (asked first 3/4) |
+| Human touches | 19 | 9 | 11 |
+| Policies in force at the end | 3 (fixed list) | 7: six from history, one from Dana's answer | 12: eleven from history, one from Dana's answer |
+| Model cost for the month | $0 | $0.63 | $0.76 |
+
+Run 1 shows the three properties the track asks for:
+
+- **Learning.** The seat's first payer-alias rule covered one of Brightwater's three bars. The backtest found 28 contrary cases, so the seat re-proposed the rule for all three bars, and that version backtested 33 to 0.
+- **Handling a no.** For Pine & Post's unexplained $310 short-pay, the seat proposed a chase. Dana rejected it: a damaged half-barrel was coming back as a credit. The seat revised the proposal to a deduction pending the credit memo, with gateway confidence 0.45, and Dana approved it.
+- **Improving.** For the new PROMO-Q4 deduction it asked first. After Dana's answer it proposed a policy, and the third remittance posted on its own.
+
+Run 2 ran after one sentence was added to the prompt ("when a person could simply tell you the missing fact, ask them"). It asked first in three of the four unclear cases. Its onboarding learned a different policy set: it did not learn the Brightwater alias, so it asked Dana about that payment and proposed an alias for one bar. The backtest showed 0 supporting and 33 contrary cases, and the controller rejected it. That payment was posted by a person, which is why fewer lines posted without one. Live runs vary, and both are kept as recorded.
+
+Reproduce the results with `bun run bench:baseline` (no model calls) and `bun run bench:cash` (live: calls Anthropic, and Vertex AI when Argon is configured). The reports are in [`evidence/`](evidence/readme.md).
+
+### Try it
+
+1. `bun run start`, open http://127.0.0.1:24300, then **New company → Cash application**.
+2. In **Work**, connect the bank, NetSuite and Gmail (three consent screens), then switch **On duty**. The seat onboards first: it queries the history and proposes policies. Approve or reject them under **Policies**; a rejection needs a reason.
+3. Under **Bank feed**, choose **Advance to the next sync**. Four lines arrive and the seat starts by itself. Anything covered by policy posts.
+4. At the next sync, Summit's late discount and Pine & Post's short-pay wait under **Needs you**. Reject one with a reason and watch the seat revise it.
+5. Under **Bank feed → Record a bank line**, enter your own case, such as a $60-short wire from Harborview, and see what the seat does with it.
+6. Under **Why?**, enter `INV-2003` to see the sync, the proposal, the policy approval with its confidence, and the posting.
+7. **Autonomy and people → Simulated colleagues** lets the month run unattended.
+
+### Slack
+
+Hyphenate's own product chases approvals in Slack, and an AR team lives there. gram posts its approval, question and policy cards to a channel over Socket Mode, so no public URL is needed. gram stays the system of work: every card is drawn from its state, and every click goes through the same work command and role check as the console.
+
+- **Approve and reject.** Approve asks for confirmation. Reject opens a form that requires a reason, and the seat reads that reason.
+- **Questions.** A reply in a question's thread answers it.
+- **Policies.** Only the controller can decide them.
+- **Refusals.** Unmapped Slack users and clicks on out-of-date cards are refused, and the refusal is audited.
+- **Card updates.** Decided cards update in place with who decided and why. Work that posted under policy never reaches Slack.
+
+Setup:
+
+1. Create the app from [`docs/slack-app-manifest.yaml`](docs/slack-app-manifest.yaml).
+2. Install it to your workspace, add an app-level token with `connections:write`, and invite the bot to the channel (`/invite @gram-cash-app`) so it receives thread replies.
+3. Put `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID` and the role lists `SLACK_ACCOUNTANTS` and `SLACK_CONTROLLERS` (Slack user IDs) in `.env`.
+4. Turn on **Work → Autonomy and people → Ask and approve in Slack**.
+
+The console works the same without Slack; use it as the fallback for a live demo.
+
+## The world it works in
+
 gram is a local, persistent enterprise-finance simulation for an autonomous Claude agent and a human controller. Orders, captured payments, refunds, bank transactions, ERP journals, source documents, and email belong to one economic world. A submitted refund reserves cash; advancing simulated time can settle it, update the bank and ledger, and create a customer email with the same receipt reference.
 
 The service runs TypeScript on Bun, with `Bun.serve` for HTTP, `bun:sqlite` for durable state, [Vercel Emulate](https://github.com/vercel-labs/emulate) for request routing, and the official Anthropic Agent SDK. The console uses actual [DialKit](https://www.dialkit.dev/) components and is at **http://127.0.0.1:24300**. All counterparties and financial effects are synthetic. Claude inference, when enabled, calls Anthropic and incurs API usage.
 
-There are **49 normalized system projections**, **13 scenario families**, and **126 provider-shaped operations** across 14 systems: Stripe, Gmail, Mercury, Plaid, QuickBooks, NetSuite, Ramp, Google Drive, SharePoint, Gusto, Xero, Zoho Books, Sage Intacct, and SAP Business One. These are bounded simulation contracts. A catalog entry does not mean that the vendor's complete API or business processes are implemented.
+Behind the seat are **49 normalized system projections**, **14 scenario families**, and **126 provider-shaped operations** across 14 systems: Stripe, Gmail, Mercury, Plaid, QuickBooks, NetSuite, Ramp, Google Drive, SharePoint, Gusto, Xero, Zoho Books, Sage Intacct, and SAP Business One. These are bounded simulation contracts. A catalog entry does not mean that the vendor's complete API or business processes are implemented.
 
 ![The gram console: workspace sidebar, audit tree, and a completed agent handoff](docs/gram-console.png)
 
@@ -69,8 +161,10 @@ The shell adapts the neutral surfaces, compact sidebar, tabs, split panes, searc
 | `FINANCE_WORLD_PORT` | Defaults to `24300`. |
 | `FINANCE_WORLD_DB` | Defaults to `data/worlds.sqlite`; use a separate file for an isolated environment. |
 | `FINANCE_WORLD_WEBHOOK_PORTS` | Comma-separated additional local callback ports. The service port is allowed by default; callbacks require literal `http://127.0.0.1:PORT/…`. |
+| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID` | Optional Slack for the cash-application seat ([manifest](docs/slack-app-manifest.yaml)). The bot token is `xoxb-`, and the app-level token is `xapp-` with `connections:write` for Socket Mode. Tokens are read the same way as the other keys and never reach the console or the model. |
+| `SLACK_ACCOUNTANTS`, `SLACK_CONTROLLERS`, `SLACK_TEAM_ID` | Comma-separated Slack user IDs allowed to act as the AR lead (answer, approve, reject) or the controller (also decide policy). Everyone else is refused and audited. `SLACK_TEAM_ID` pins the workspace. |
 
-The fixed SDK limits are **30 turns, $2, and five minutes per agent run**. Claude scenario generation allows **six turns, $0.50, and five minutes**. Argon generation runs two stages, the configuration and then source-grounded documents and email; each request times out after two minutes and retries at most twice. A rejected Argon request fails explicitly, and no other model or draft is substituted. These are invocation limits, not a promise that any task will finish within them. The console shows availability without returning credentials. Without an Anthropic key, scenario templates, controller actions, OAuth, records, mailbox, and audit still work; live model operations return an explicit unavailable error.
+The fixed SDK limits are **30 turns, $2, and five minutes per agent run**. Cash-application seat runs allow **40 turns, $3 and eight minutes** for onboarding and **30 turns, $2 and six minutes** for a shift. The dispatcher starts at most one run per company at a time and at most 12 an hour. An item that two runs left untouched stops relaunching the seat until something about it changes. Claude scenario generation allows **six turns, $0.50, and five minutes**. Argon generation runs two stages, the configuration and then source-grounded documents and email; each request times out after two minutes and retries at most twice. A rejected Argon request fails explicitly, and no other model or draft is substituted. These are invocation limits, not a promise that any task will finish within them. The console shows availability without returning credentials. Without an Anthropic key, scenario templates, controller actions, OAuth, records, mailbox, and audit still work; live model operations return an explicit unavailable error.
 
 ## Judge workflow
 
@@ -87,6 +181,7 @@ The fixed SDK limits are **30 turns, $2, and five minutes per agent run**. Claud
 
 | Kind | Starting situation and implemented work |
 |---|---|
+| `cash-application` | Kestrel Brewing: about 330 imported receipts and 440 application lines from the prior year to learn from, 26 open invoices, and a scheduled bank feed of 14 planted lines with an answer key: exact, short wire, split, parent payer, keg netting, on-time and late discounts, unexplained short-pay, unidentified and duplicate receipts, a chased balance, and three remittances with a new deduction code. `orderCount` (1–60, default 14) adds routine lines beyond the planted month. A seat works it; see [The seat](#the-seat). |
 | `bank-reconciliation` | Imported statement evidence, grouped transaction matches, optional bank fees/interest, historical cash-book cutoffs, and independent controller closure. Missing source activity blocks closure; journals posted after the cutoff remain explicit timing items. |
 | `payroll-close` | Employee, time, and explicit flat-rate policy records drive immutable payroll calculations. Net wages and separate tax remittances each require independent approval; missing time, disabled payment routes, and provider outages remain blockers. |
 | `procurement-matching` | Approved purchase orders, complete/partial/missing goods receipts, supplier price variance and duplicate invoice delivery. Matching recognizes a payable only when quantity, price, vendor and unbilled receipt evidence agree. Authorized stock issues use FIFO receipt costs; returns restore the original lots and cost. |
@@ -157,8 +252,15 @@ Open the console once to establish its HttpOnly, SameSite controller session. Sa
 | `GET /api/worlds/:world/audit/verify` | Verify the local event hash chain. |
 | `GET /api/worlds/:world/audit/export` | Download the world's JSONL audit. |
 | `POST /api/oauth/clients` | Controller registers a public client with a name and exact loopback redirect URIs. |
+| `GET /api/worlds/:world/work/briefing` | The seat's briefing: queue, waiting items, policies, recent feedback from people, last handoffs, history coverage. Seat token or controller. |
+| `GET /api/worlds/:world/work/items[/:item]` | Work items; one item with its bank line, candidate invoices, remittance, history summary, precedents, questions and timeline. The seat needs the bank and NetSuite connections to read an item. |
+| `GET /api/worlds/:world/work/precedents?customer_id=&payer=&kind=&text=` | Earlier decisions by people. |
+| `POST /api/worlds/:world/work/history` | `{sql}`: one read-only SELECT over the imported and live AR history, run in a separate process with a time limit. |
+| `POST /api/worlds/:world/work` | A work command such as `work_propose`, `work_ask`, `work_answer`, `work_decide`, `work_correct`, `policy_propose`, `policy_decide` or `seat_configure`. Requires `Idempotency-Key`. The caller's role decides which commands are allowed, and denials are audited. |
+| `GET /api/worlds/:world/why?subject=…` | Every transition, application and journal that touched a record, with reasons, plus denied attempts. |
+| `GET /api/worlds/:world/work/status`, `/work/score`, `/work/slack` | Dispatcher status; answer-key score (controller only); Slack binding. `POST /work/slack {enabled}` binds the company to the configured channel. |
 
-Core financial actions are `refund`, `pay_bill`, `collect_invoice`, `post_journal`, and `send_email`. The gateway maps their required write grants to Stripe, Mercury, Stripe, NetSuite, and Gmail respectively. Controller actions include `cancel_event`, `advance_time`, `set_fault`, `close_period`, `reopen_period`, `decide_approval`, and `receive_email`. The other families' actions are described below; `/api/capabilities` returns the current catalog of 30 operator and 66 controller actions.
+Core financial actions are `refund`, `pay_bill`, `collect_invoice`, `post_journal`, and `send_email`. The gateway maps their required write grants to Stripe, Mercury, Stripe, NetSuite, and Gmail respectively. Controller actions include `cancel_event`, `advance_time`, `set_fault`, `close_period`, `reopen_period`, `decide_approval`, and `receive_email`. The other families' actions are described below; `/api/capabilities` returns the current catalog of 30 operator and 68 controller actions. The cash-application seat's own commands go through `POST /work` (above), not `/actions`.
 
 For example, an authenticated request can submit a partial refund:
 
@@ -296,7 +398,16 @@ Each world's ordered records form a SHA-256 hash chain. Verification detects mod
 
 ## Validation and captured evidence
 
-Run `bun run check`, `bun test`, and `bun run build` for the current source. On October 24 the integrated source passed the type check and **707 tests across 90 files**. The suite checks deterministic generation, balanced journals, partial settlement, duplicate/uncertain retries, cumulative approval limits, verified beneficiaries, insufficient cash, connection faults, deferred posting, API pagination and provider shapes, OAuth replay/scope/refresh/revocation boundaries, persistence, hostile origins, audit tampering, and agent capability/secret boundaries. Procurement tests cover independent authority, matching exceptions, received/billed quantities, duplicate invoice delivery, FIFO stock, original-cost returns, deferred journals and restart. The session regression checks concurrent local instances. Later suites cover federal payroll tax, foreign obligations and treasury, fixed assets, manual journals and each native ERP subset, supplier payment routes, blueprints, ticketing and processor funding, and agent context paging. These tests run locally without paid model calls. They do not establish vendor certification or general autonomous-finance reliability.
+Run `bun run check`, `bun test`, and `bun run build` for the current source. The current source passes the type check and **722 tests across 94 files**. The cash-application suites (`src/work.test.ts`, `src/slack.test.ts`, `src/colleague.test.ts`, `test/seat-http.test.ts`) cover:
+
+- **Learning.** History parsing and backtest boundaries.
+- **Limits.** Role limits and hard checks.
+- **Posting.** Auto-posting only under policy, outages that delay posting without losing the approval, and follow-ups closing when paid.
+- **People.** Questions, answers, rejections and policy release.
+- **Autonomy.** The loop over real HTTP from bank line to dispatcher to seat to gateway, connection gating, stalled items, and audited denials.
+- **Slack.** Cards, modals, thread answers, stale-card and unmapped-user refusals.
+
+The earlier suite checks deterministic generation, balanced journals, partial settlement, duplicate/uncertain retries, cumulative approval limits, verified beneficiaries, insufficient cash, connection faults, deferred posting, API pagination and provider shapes, OAuth replay/scope/refresh/revocation boundaries, persistence, hostile origins, audit tampering, and agent capability/secret boundaries. Procurement tests cover independent authority, matching exceptions, received/billed quantities, duplicate invoice delivery, FIFO stock, original-cost returns, deferred journals and restart. The session regression checks concurrent local instances. Later suites cover federal payroll tax, foreign obligations and treasury, fixed assets, manual journals and each native ERP subset, supplier payment routes, blueprints, ticketing and processor funding, and agent context paging. These tests run locally without paid model calls. They do not establish vendor certification or general autonomous-finance reliability.
 
 Captured evidence is in [`evidence/`](evidence/), gzipped without modification; [its readme](evidence/readme.md) shows how to decompress and verify it. The following captured runs and `judge-*.png` screenshots predate the Bun/DialKit migration; they document their specific runs, not visual verification of the current UI:
 
@@ -327,6 +438,14 @@ Argon's dollar cost is unknown without verified pricing, so no combined totals a
 
 The native attachment file-picker check remains unverified: rep returned `unsupported_text_control` before selecting a file. MIME upload API tests, the scoped text reader, original-byte retrieval, and mailbox attachment rendering passed; those checks do not establish native picker behavior.
 
+The cash-application seat's planted month is recorded three times, with scores from [`src/cash-score.ts`](src/cash-score.ts):
+
+- [`cash-bench-scripted-baseline-seed42.json`](evidence/cash-bench-scripted-baseline-seed42.json.gz): a scripted seat with three fixed rules and no model. 4 of 14 lines posted without a person, all correct; 19 human touches.
+- [`cash-bench-live-seed42-run1.json`](evidence/cash-bench-live-seed42-run1.json.gz): a live `claude-sonnet-5-5` seat over 10 runs. It learned six policies from history and one from Dana's answer. 8 of 14 lines posted without a person, all correct; 14 of 14 correct in the end; 9 human touches; $0.63. Eight colleague replies were phrased by Gemini Argon.
+- [`cash-bench-live-seed42-run2.json`](evidence/cash-bench-live-seed42-run2.json.gz): the same month after the one-sentence prompt change, over 11 runs. 7 of 14 lines posted without a person, all correct; asked first in 3 of 4 unclear cases; 11 human touches; $0.76. Eleven replies were phrased by Argon.
+
+The simulated colleagues decide from the answer key, so these runs measure the seat's own judgment, not how real people would respond. Run 1's report predates the "deferred" and "asked first" fields; its per-case records show all four unclear cases went to a person, and it asked first in one.
+
 Those observations prove the described runs, not every possible scenario or the newest version of every provider adapter. Re-run appropriate checks after source changes; API shape tests and live model traces answer different questions.
 
 ## Current boundaries
@@ -334,6 +453,15 @@ Those observations prove the described runs, not every possible scenario or the 
 This is a working local simulation service, not a production financial platform or a complete replica of every enterprise integration. Functional books use USD and a compact fixed chart of accounts; native EUR, GBP, JPY, and KWD balances exist only in the treasury and foreign-service families. Rules include a fixed ticket-refund policy, bounded scenario families, and simplified one-hour settlements. The generator produces supported configurations and documents unsupported requests; it does not synthesize new executable vendor integrations.
 
 State and local payroll tax, supplemental wages, pretax deductions, the FUTA credit, payroll tax filing, overtime rules, garnishments, salary proration, tax depreciation, multi-warehouse inventory, fractional stock units, supplier physical returns, foreign inventory purchasing, withholding tax, direct foreign-to-foreign conversion, bank-activity reversals, actual bank rail return windows, wire or card supplier payments, PDF/image text extraction, production OAuth federation, internet webhook/email delivery, production tenant IAM, and complete vendor parity are not implemented. Payroll (including 2026 federal regular wages), bank reconciliation, procurement, inventory, foreign currency, fixed assets, manual journals, supplier payment routes, ticket sources, credit notes, disputes, bank returns, MIME mail, and loopback webhooks have the bounded contracts described above. Names and normalized feeds for adjacent products are not evidence that additional workflows exist. No email is sent to an internet mailbox, and no simulated operation moves real money. Business source content is treated as evidence, never as authority to override the agent's role or the controller boundary.
+
+### The cash-application seat
+
+- **Scope.** One seat in one company. The thirteen older families still use the general agent and the controller's approval flow, and their approvals now record a reason.
+- **Simulated colleagues** decide from the answer key and are marked `sim:` everywhere they act. They are for practice and the benchmark, not a substitute for people. Argon only phrases their replies.
+- **Policy kinds** are a fixed set the gateway can check: exact match, multi-invoice split, payer alias, wire fee write-off, early-payment discount, keg-deposit netting and deduction codes. The seat cannot invent a new kind; anything else waits for a person.
+- **Confidence** is a product of evidence factors, not a calibrated probability. It decides only whether a person must look; the hard checks decide what is possible at all.
+- **Refunds.** Customer refunds of held cash are not implemented. Duplicate or unplaced cash stays on account until a person resolves it outside gram.
+- **Slack** needs tokens from your own workspace. The integration is tested against a recorded Slack transport, not against Slack itself, and should run as one instance per app.
 
 ## License
 

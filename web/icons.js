@@ -31,9 +31,10 @@ const paths = {
   copy: ['M10 9h9a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z', 'M16 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3'],
   download: ['M12 3v12m-5-5 5 5 5-5', 'M3 16v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3'],
   'chevron-down': ['m6 9 6 6 6-6'],
+  inbox: ['M22 12h-6l-2 3h-4l-2-3H2', 'M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1Z'],
 };
 
-const aliases = { overview: 'grid', finance: 'wallet', procurement: 'box', sources: 'files', agent: 'sparkles', delivery: 'send', audit: 'check', create: 'plus' };
+const aliases = { work: 'inbox', overview: 'grid', finance: 'wallet', procurement: 'box', sources: 'files', agent: 'sparkles', delivery: 'send', audit: 'check', create: 'plus' };
 const namespace = 'http://www.w3.org/2000/svg';
 
 /** A fresh, decorative SVG. Accessible names belong on the containing control. */

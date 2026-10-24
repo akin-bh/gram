@@ -36,7 +36,8 @@ function apiKey(): string | undefined {
   if (provided) return provided;
   try {
     const contents = readFileSync(process.env.FINANCE_WORLD_ENV_FILE || ENV_FILE, 'utf8');
-    const match = contents.match(/^\s*(?:export\s+)?ANTHROPIC_API_KEY\s*=\s*(.*?)\s*$/m);
+    // Match one line at a time; across lines, \s lets an empty assignment take the next line as its value.
+    const match = contents.split(/\r\n?|\n/).map(line => line.match(/^\s*(?:export\s+)?ANTHROPIC_API_KEY\s*=\s*(.*?)\s*$/)).find(Boolean);
     if (!match) return undefined;
     const value = match[1]!;
     if (value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1).trim() || undefined;
@@ -218,13 +219,13 @@ export function validateGeneratedScenario(value: unknown): z.infer<typeof scenar
   return parsed.data;
 }
 
-function requireKey(): string {
+export function requireKey(): string {
   const key = apiKey();
   if (!key) throw new AgentError('anthropic_not_configured', 'ANTHROPIC_API_KEY is required for a live Claude run.', 503);
   return key;
 }
 
-function assertWorldEndpoint(baseUrl: string, worldId: string): string {
+export function assertWorldEndpoint(baseUrl: string, worldId: string): string {
   let url: URL;
   try { url = new URL(baseUrl); } catch { throw new AgentError('invalid_agent_endpoint', 'The world service URL is invalid.', 400); }
   if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
@@ -315,23 +316,23 @@ export function createNativeProviderRequester(config:{worldId:string;baseUrl:str
   };
 }
 
-function abortLink(signal?: AbortSignal): { controller: AbortController; dispose: () => void } {
+export function abortLink(signal?: AbortSignal, limitMs = MAX_DURATION_MS): { controller: AbortController; dispose: () => void } {
   const controller = new AbortController();
   const abort = () => controller.abort(signal?.reason ?? new Error('Agent run cancelled.'));
   if (signal?.aborted) abort();
   else signal?.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(() => controller.abort(new Error('Agent run exceeded its five-minute time limit.')), MAX_DURATION_MS);
+  const timer = setTimeout(() => controller.abort(new Error(`Agent run exceeded its ${Math.round(limitMs / 60_000)}-minute time limit.`)), limitMs);
   timer.unref();
   return { controller, dispose() { clearTimeout(timer); signal?.removeEventListener('abort', abort); } };
 }
 
-async function createWorkspace(): Promise<string> {
+export async function createWorkspace(): Promise<string> {
   const workspace = await mkdtemp(join(tmpdir(), 'finance-world-agent-'));
   await mkdir(join(workspace, '.claude-config'), { mode: 0o700 });
   return workspace;
 }
 
-function baseOptions(workspace: string, key: string, model: string, controller: AbortController): Options {
+export function baseOptions(workspace: string, key: string, model: string, controller: AbortController): Options {
   return {
     model,
     executable: 'bun',
@@ -362,7 +363,7 @@ function baseOptions(workspace: string, key: string, model: string, controller: 
   };
 }
 
-type RunResult = {
+export type RunResult = {
   output: string;
   usage: unknown;
   model: string;

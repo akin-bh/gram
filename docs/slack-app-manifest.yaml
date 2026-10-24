@@ -1,0 +1,27 @@
+# Slack app for gram's cash-application seat (Socket Mode: no public URL needed).
+# Create it at https://api.slack.com/apps → Create New App → From an app manifest,
+# install it to your workspace, then copy the tokens into .env (see .env.example).
+display_information:
+  name: gram
+  description: Kestrel Brewing's cash-application seat asks and gets approvals here.
+features:
+  bot_user:
+    display_name: gram-cash-app
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write          # post and update approval, question and policy cards
+      - chat:write.public   # post in a public channel without joining it
+      - channels:history    # receive thread replies (answers) in public channels
+      - groups:history      # same, for a private channel
+settings:
+  socket_mode_enabled: true
+  interactivity:
+    is_enabled: true
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      - message.groups
+  org_deploy_enabled: false
+  token_rotation_enabled: false
