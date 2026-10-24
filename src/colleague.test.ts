@@ -39,8 +39,17 @@ test('simulated colleagues act only when switched on, under sim: identities, fro
   h.act({type:'policy_propose',rule:{kind:'short_pay_writeoff',adjustment:'bank_fee',max_gap_minor:20000,channels:['wire']},title:'Write off wire gaps up to $200',rationale:'Wires often arrive short; absorb the gap.',evidence:{queries:[{sql:'SELECT COUNT(*) FROM applied_lines',finding:'many short wires'}]}},agent);
   await h.tick();
   expect(h.w.policies.at(-1)).toMatchObject({status:'rejected',decided_by:'sim:controller'});expect(h.w.policies.at(-1).decision_reason).toMatch(/contrary/);
+  // A clean backtest is not enough when the bound sits above every case that supports it.
+  h.act({type:'policy_propose',rule:{kind:'short_pay_writeoff',adjustment:'bank_fee',max_gap_minor:5000,channels:['wire']},title:'Wire fees up to $50',rationale:'Round the fee bound up to $50.',evidence:{queries:[{sql:'SELECT COUNT(*) FROM applied_lines',finding:'77 of 77 under $45'}]}},agent);
+  await h.tick();
+  expect(h.w.policies.at(-1)).toMatchObject({status:'rejected',decided_by:'sim:controller'});expect(h.w.policies.at(-1).decision_reason).toMatch(/\$50\.00 is 11\.1% above the largest case that supports it \(\$45\.00\)/);
   h.act({type:'policy_propose',rule:{kind:'short_pay_writeoff',adjustment:'bank_fee',max_gap_minor:4500,channels:['wire']},title:'Wire fees up to $45',rationale:'Every wire short by $15 to $45 was booked to bank fees.',evidence:{queries:[{sql:'SELECT COUNT(*) FROM applied_lines',finding:'77 of 77'}]}},agent);
   await h.tick();
-  expect(h.w.policies.at(-1)).toMatchObject({status:'active',decided_by:'sim:controller'});
+  expect(h.w.policies.at(-1)).toMatchObject({status:'active',decided_by:'sim:controller'});expect(h.w.policies.at(-1).decision_reason).toMatch(/largest supporting case of \$45\.00/);
   expect(await h.tick()).toBeNull();
+  // Under the no-backtest ablation the simulated controller approves anything, and says so.
+  h.act({type:'seat_configure',ablation:{skip_backtest:true}},controller);
+  h.act({type:'policy_propose',rule:{kind:'short_pay_writeoff',adjustment:'bank_fee',max_gap_minor:30000,channels:['ach']},title:'ACH gaps to $300',rationale:'Ablation: approve anything.',evidence:{queries:[{sql:'SELECT COUNT(*) FROM applied_lines',finding:'no cases'}]}},agent);
+  await h.tick();
+  expect(h.w.policies.at(-1)).toMatchObject({status:'active',decision_reason:'Ablation: approved without reading the backtest.'});
 });

@@ -4,6 +4,7 @@ import type {World,Action,Actor} from './world.ts';
 import {invoiceRefs,payerMatches,parseRemittance,backtestRule} from './cash-application.ts';
 import {whyTimeline,workBriefing,workItemView,agentQueue} from './work.ts';
 import {scoreCashApplication} from './cash-score.ts';
+import {colleagueTick} from './colleague.ts';
 
 const agent:Actor={id:'agent-world:test',role:'agent'},controller:Actor={id:'controller-local',role:'controller'},dana:Actor={id:'slack:U0DANA',role:'accountant'};
 const act=(w:World,action:Action,actor:Actor=controller)=>applyAction(w,action,actor).result;
@@ -208,4 +209,95 @@ test('a judge can drop in a bank line of their own; it becomes work the same way
   // $60 short is outside the learned $50 bound, so even a confident proposal waits for a person.
   const proposal=act(w,{type:'work_propose',work_item_id:w.workItems.at(-1).id,allocations:[{invoice_id:'INV-2003',amount_minor:5794000}],adjustments:[{invoice_id:'INV-2003',kind:'bank_fee',amount_minor:6000}],confidence:0.9,reason:'Looks like a bigger intermediary fee on the same wire.'},agent);
   expect(proposal.outcome).toBe('awaiting_approval');expect(proposal.proposal.gaps.join(' ')).toMatch(/bank fee of \$60\.00/);balanced(w);
+});
+
+test('a proposal a person rejected cannot come back unchanged; a changed one can',()=>{
+  const w=onboarded();act(w,{type:'advance_to',at:'2026-10-28T13:00:00.000Z'});
+  const summit=item(w,'JPM-88310494')!;
+  // Summit took 2% on day 26; terms allow 10, so no policy covers the discount and the proposal waits for a person.
+  const discount={type:'work_propose',work_item_id:summit.id,allocations:[{invoice_id:'INV-2013',amount_minor:1470000}],adjustments:[{invoice_id:'INV-2013',kind:'early_pay_discount',amount_minor:30000}],confidence:0.9,reason:'Summit took its 2% discount; book it as an early-payment discount.'};
+  expect(act(w,discount,agent).outcome).toBe('awaiting_approval');
+  act(w,{type:'work_decide',work_item_id:summit.id,decision:'reject',reason:'Taken 26 days after the invoice; terms allow 10. Chase it.'},dana);
+  expect(item(w,'JPM-88310494').rejected_proposals).toHaveLength(1);
+  // The same move under new words is refused by the gateway, with the person's reason in the refusal.
+  denied(w,{...discount,reason:'On reflection the discount still looks earned to me.'},agent,'repeat_proposal');
+  expect(()=>act(w,{...discount,reason:'Second try.'},agent)).toThrowSatisfying((error:any)=>error instanceof DomainError&&/Chase it/.test(error.message));
+  expect(item(w,'JPM-88310494').state).toBe('rejected');
+  // A different move goes through, and the item keeps every proposal it ever received.
+  const chase=act(w,{type:'work_propose',work_item_id:summit.id,allocations:[{invoice_id:'INV-2013',amount_minor:1470000}],chase:{invoice_id:'INV-2013',amount_minor:30000},confidence:0.9,reason:'Discount disallowed: apply the cash and chase the $300.'},agent);
+  expect(chase.outcome).toBe('awaiting_approval');
+  expect(item(w,'JPM-88310494').proposals.map((row:any)=>row.adjustment_kinds)).toStrictEqual([['early_pay_discount'],[]]);
+  // The score reports the forbidden move even though a person caught it.
+  const score=scoreCashApplication(w),row=score.cases.find((entry:any)=>entry.bank_reference==='JPM-88310494');
+  expect(row!.forbidden_hits).toStrictEqual(['P-1 proposed early_pay_discount']);expect(score.summary.forbidden_proposals).toHaveLength(1);expect(score.summary.should_not_auto_posted).toStrictEqual([]);
+});
+
+test('a policy bound wider than its evidence is reported as headroom; the simulated controller refuses it',()=>{
+  const w=createWorld({kind:'cash-application',seed:42},'world-bound');
+  const tight=backtestRule(w,{kind:'short_pay_writeoff',adjustment:'bank_fee',max_gap_minor:4500,channels:['wire']});
+  expect(tight.contrary).toBe(0);expect(tight.bound).toStrictEqual({rule:4500,unit:'cents',largest_supporting:4500,headroom_pct:0});
+  const wide=backtestRule(w,{kind:'short_pay_writeoff',adjustment:'bank_fee',max_gap_minor:5000,channels:['wire']});
+  expect(wide.contrary).toBe(0);expect(wide.bound).toMatchObject({rule:5000,largest_supporting:4500,headroom_pct:11.1});
+  expect(backtestRule(w,{kind:'exact_match'}).bound).toBeNull();
+  expect(backtestRule(w,{kind:'deduction_code',code:'PROMO-Q4',adjustment:'promotional_allowance',customer_ids:['cus-glbd'],max_bps:200}).bound).toStrictEqual({rule:200,unit:'bps',largest_supporting:null,headroom_pct:null});
+});
+
+test('ablation: trusting the agent\'s confidence posts what the gateway would hold, and the score says so',()=>{
+  const proposal=(id:string)=>({type:'work_propose',work_item_id:id,allocations:[{invoice_id:'INV-2014',amount_minor:189000}],adjustments:[{invoice_id:'INV-2014',kind:'bank_fee',amount_minor:31000}],confidence:0.97,reason:'A $310 fee, I am confident.'});
+  const w=onboarded();act(w,{type:'advance_to',at:'2026-10-28T13:00:00.000Z'});
+  expect(act(w,proposal(item(w,'JPM-88310502').id),agent).outcome).toBe('awaiting_approval');
+  const ablated=onboarded();act(ablated,{type:'advance_to',at:'2026-10-28T13:00:00.000Z'});
+  denied(ablated,{type:'seat_configure',ablation:{bogus:true}},controller,'invalid_seat_setting');
+  denied(ablated,{type:'seat_configure',ablation:{trust_agent_confidence:true}},agent,'work_permission_denied');
+  act(ablated,{type:'seat_configure',ablation:{trust_agent_confidence:true}});
+  expect(summarize(ablated).seat!.ablation.trust_agent_confidence).toBe(true);
+  const result=act(ablated,proposal(item(ablated,'JPM-88310502').id),agent);
+  expect(result.outcome).toBe('auto_approved');expect(item(ablated,'JPM-88310502').state).toBe('posted');
+  const score=scoreCashApplication(ablated).summary;
+  expect(score.false_auto_posts).toStrictEqual(['JPM-88310502']);expect(score.should_not_auto_posted).toStrictEqual(['JPM-88310502']);expect(score.forbidden_proposals[0]!).toMatch(/^JPM-88310502: P-\d+ proposed bank_fee$/);
+  expect(score.by_set.planted.precision_of_automation).toBe(0);
+  balanced(ablated);
+});
+
+test('a company can start with no history to learn from, and bad controls are refused',()=>{
+  expect(()=>createWorld({kind:'cash-application',seed:42,cashControls:{history:'yes' as any}},'x')).toThrowSatisfying((error:any)=>error instanceof DomainError&&error.code==='invalid_scenario');
+  expect(()=>createWorld({kind:'cash-application',seed:42,cashControls:{heldOut:true} as any},'x')).toThrowSatisfying((error:any)=>error instanceof DomainError&&error.code==='invalid_scenario');
+  expect(()=>createWorld({kind:'bank-reconciliation',cashControls:{history:false}},'x')).toThrowSatisfying((error:any)=>error instanceof DomainError&&error.code==='invalid_scenario');
+  const w=createWorld({kind:'cash-application',seed:42,cashControls:{history:false}},'world-nohistory');
+  expect(w.cashHistory.receipts).toHaveLength(0);expect(w.seat.onboarding.status).toBe('done');expect(summarize(w).seat!.history_imported).toBe(false);
+  expect(backtestRule(w,{kind:'exact_match'}).covered).toBe(0);
+  expect(createWorld({kind:'cash-application',seed:42},'world-history').cashHistory.receipts.length).toBeGreaterThan(250);
+});
+
+test('a judge records a bank line with its answer key; the seat works it unseen and the score reports a judge set',async()=>{
+  const w=onboarded();act(w,{type:'advance_to',at:'2026-10-27T13:00:00.000Z'});
+  const key={type:'record_case_expectation',bank_reference:'JPM-99000001',title:'Wire $50 short, above the learned fee bound',expected:{allocations:[{invoice_id:'INV-2004',amount_minor:2425000}],chase:{invoice_id:'INV-2004',amount_minor:5000}},forbid:{adjustment_kinds:['bank_fee']},auto:false,truth:'Harborview fees have always been $15 to $45; a $50 difference is not a fee we absorb. Apply $24,250 to INV-2004 and send a short-pay notice for the $50.'};
+  // The line comes first; the key needs a line to score, and only the controller may record one.
+  denied(w,key,controller,'unknown_bank_reference');
+  act(w,{type:'record_bank_receipt',bank_reference:'JPM-99000001',amount_minor:2425000,channel:'wire',payer_name:'HARBORVIEW HOTEL GROUP',memo:'WIRE IN HARBORVIEW HOTEL GROUP INV 2004',external_event_id:'judge:JPM-99000001'});
+  denied(w,key,agent,'controller_required');
+  denied(w,{...key,forbid:{adjustment_kinds:['tip']}},controller,'invalid_case_expectation');
+  denied(w,{...key,auto:'no'},controller,'invalid_case_expectation');
+  denied(w,{...key,truth:'short'},controller,'invalid_case_expectation');
+  denied(w,{...key,expected:{}},controller,'invalid_case_expectation');
+  expect(act(w,key).case).toMatchObject({set:'judge',auto:false,first_move:'ask'});
+  denied(w,key,controller,'case_expectation_exists');
+  expect(summarize(w).seat!.judge_cases).toBe(1);
+  const judge=item(w,'JPM-99000001')!;expect(judge.state).toBe('new');
+  // The seat sees the bank line, the invoices and the history, never the key or the truth.
+  for(const view of [workItemView(w,judge.id,{find}),workBriefing(w)])expect(JSON.stringify(view)).not.toMatch(/not a fee we absorb|judge/);
+  // It asks; the simulated AR lead answers from the judge's truth; the right proposal is approved and posted.
+  act(w,{type:'seat_configure',colleagues:true});
+  const work=(_world:string,input:any,actor:any)=>({result:act(w,input,actor)}),caseFile=async(_situation:string,_what:string,truth:string)=>({text:truth,phrased_by:'case-file' as const});
+  act(w,{type:'work_ask',work_item_id:judge.id,to_role:'accountant',question:'Harborview wired $50 short of INV-2004. Is that a fee we absorb, or do we chase it?'},agent);
+  await colleagueTick('world-test',w,work,caseFile);
+  expect(w.questions.at(-1)).toMatchObject({status:'answered',answered_by:'sim:dana.ruiz'});expect(w.questions.at(-1).answer).toMatch(/not a fee we absorb/);
+  expect(act(w,{type:'work_propose',work_item_id:judge.id,allocations:[{invoice_id:'INV-2004',amount_minor:2425000}],chase:{invoice_id:'INV-2004',amount_minor:5000},confidence:0.9,reason:'Per the AR lead: apply the cash and chase the $50.'},agent).outcome).toBe('awaiting_approval');
+  await colleagueTick('world-test',w,work,caseFile);
+  expect(item(w,'JPM-99000001').state).toBe('posted');
+  const score=scoreCashApplication(w),judgeScore=score.summary.by_set.judge;
+  expect(score.cases.find((row:any)=>row.bank_reference==='JPM-99000001')).toMatchObject({set:'judge',case:'judge_scenario',first_move:'ask',correct:true,approval:'human'});
+  expect(judgeScore).toMatchObject({cases:1,correct:1,auto_posted:0,forbidden_proposals:[],should_not_auto_posted:[],missed_auto:[]});expect(judgeScore.human_touches).toBeGreaterThanOrEqual(2);
+  expect(score.summary.by_set.planted.cases).toBe(4);
+  balanced(w);
 });

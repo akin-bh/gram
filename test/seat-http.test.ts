@@ -111,7 +111,13 @@ test('an answer from a person wakes the seat; an item it cannot move stops relau
     idle=true;await f.call(`/api/worlds/${id}/actions`,{type:'advance_time',hours:24});
     await f.tick();await f.tick();const stalledRuns=f.runs.length;await f.tick();
     expect(f.runs.length).toBe(stalledRuns);
-    const status=(await f.call(`/api/worlds/${id}/work/status`)).data;expect(status.stalled_items.length).toBeGreaterThan(0);
     expect(f.server.store.events(id,0,5000).some((event:any)=>event.type==='seat.item_stalled')).toBe(true);
+    // ...and hands the item to a person instead of looping: escalated by the dispatcher role, which can do nothing else.
+    items=(await f.call(`/api/worlds/${id}/work/items`)).data.data;
+    const escalated=items.filter((row:any)=>row.state==='escalated'&&row.escalation?.to_role==='accountant'&&/untouched in two runs/.test(row.escalation.reason));
+    expect(escalated.length).toBeGreaterThan(0);
+    expect(f.server.store.world(id).workLog.some((row:any)=>row.actor==='dispatcher'&&row.role==='dispatcher'&&row.action==='escalate')).toBe(true);
+    const status=(await f.call(`/api/worlds/${id}/work/status`)).data;expect(status.stalled_items).toStrictEqual([]);expect(typeof status.model).toBe('string');
+    const decide=await f.call(`/api/worlds/${id}/work`,{type:'work_decide',work_item_id:escalated[0].id,decision:'approve'});expect(decide.status).toBe(409);expect(decide.data.error.code).toBe('nothing_to_decide');
   }finally{await f.dispose();}
 });

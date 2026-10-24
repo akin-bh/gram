@@ -61,8 +61,16 @@ export async function colleagueTick(worldId:string,w:any,work:Work,phrase:Phrase
   }
   const policy=w.policies.find((row:any)=>row.status==='proposed');
   if(policy){
-    const clean=policy.backtest.contrary===0&&policy.backtest.support>=1;
-    const reason=clean?`Backtest: ${policy.backtest.support} agreeing cases, none contrary.`:policy.backtest.contrary?`Backtest shows ${policy.backtest.contrary} contrary case${policy.backtest.contrary===1?'':'s'}${policy.backtest.contrary_examples?.length?` (${policy.backtest.contrary_examples.join(', ')})`:''}; the rule does not match what we actually did.`:'Nothing supports it yet: no approved decision follows this rule. Propose it again once a person has approved a case it covers.';
+    const backtest=policy.backtest,bound=backtest.bound,fmt=(value:number)=>bound?.unit==='cents'?dollars(value):`${(value/100).toFixed(2)}%`;
+    // The simulated controller reads the backtest the way a careful one would: no contrary cases, at least
+    // one supporting case, and a bound no more than 10% above the largest case that supports it.
+    const wide=Boolean(bound&&bound.largest_supporting!==null&&bound.headroom_pct!==null&&bound.headroom_pct>10);
+    const skip=Boolean(w.seat.ablation?.skip_backtest),clean=skip||(backtest.contrary===0&&backtest.support>=1&&!wide);
+    const reason=skip?'Ablation: approved without reading the backtest.'
+      :clean?`Backtest: ${backtest.support} agreeing cases, none contrary${bound&&bound.largest_supporting!==null?`; bound ${fmt(bound.rule)} against a largest supporting case of ${fmt(bound.largest_supporting)}`:''}.`
+      :backtest.contrary?`Backtest shows ${backtest.contrary} contrary case${backtest.contrary===1?'':'s'}${backtest.contrary_examples?.length?` (${backtest.contrary_examples.join(', ')})`:''}; the rule does not match what we actually did.`
+      :wide?`The bound ${fmt(bound!.rule)} is ${bound!.headroom_pct}% above the largest case that supports it (${fmt(bound!.largest_supporting!)}); tighten it to what we actually did.`
+      :'Nothing supports it yet: no approved decision follows this rule. Propose it again once a person has approved a case it covers.';
     return run({type:'policy_decide',policy_id:policy.id,version:policy.version,decision:clean?'approve':'reject',reason},SIM_CONTROLLER,{phrased_by:'case-file'});
   }
   return null;

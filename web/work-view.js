@@ -1,12 +1,20 @@
 // The seat's desk: what it is doing, what waits on a person, the policies it works under,
 // and why any record looks the way it does. Every button is a work command with a role check.
-const itemViews = new Map(), whyResults = new Map();
+const itemViews = new Map(), whyResults = new Map(), scoreResults = new Map();
+const ADJUSTMENT_KINDS = ['bank_fee', 'early_pay_discount', 'keg_deposit', 'promotional_allowance', 'deduction_pending'];
 const percent = value => Math.round(Number(value || 0) * 100) + '%';
 const when = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }) + ' UTC' : '';
 const actorLabel = id => String(id || '').startsWith('agent-world:') ? 'the seat' : String(id).startsWith('slack:') ? 'Slack ' + String(id).slice(6) : String(id).startsWith('sim:') ? String(id).slice(4) + ' (simulated)' : id === 'controller-local' ? 'Controller' : id;
 const states = ['new', 'proposed', 'needs_info', 'answered', 'rejected', 'approved', 'posted', 'escalated', 'scheduled', 'closed'];
 const stateLabels = { new: 'New', proposed: 'Awaiting approval', needs_info: 'Question asked', answered: 'Answered', rejected: 'Rejected', approved: 'Approved', posted: 'Posted', escalated: 'Escalated', scheduled: 'Follow-up scheduled', closed: 'Closed' };
 
+// A rule's bound next to the largest case that supports it: a bound wider than its evidence is how a rule quietly grows.
+function boundText(backtest, ctx) {
+  const bound = backtest?.bound;
+  if (!bound || bound.largest_supporting === null) return '';
+  const fmt = value => bound.unit === 'cents' ? ctx.money(value) : (value / 100).toFixed(2) + '%';
+  return ' · bound ' + fmt(bound.rule) + ' vs largest supporting case ' + fmt(bound.largest_supporting) + (bound.headroom_pct > 0 ? ' (+' + bound.headroom_pct + '%)' : '');
+}
 function proposalLines(proposal, money) {
   if (!proposal) return [];
   if (proposal.kind === 'reminder') return ['Send reminder: ' + proposal.reminder];
@@ -56,7 +64,7 @@ export function renderWork(content, ctx) {
   card.text('Status', [
     status.running_run ? 'Working a shift now' : seat.autonomy.enabled ? 'Waiting for work' : 'Off duty',
     status.missing_connections?.length ? 'Needs connections: ' + status.missing_connections.join(', ') : '',
-    !status.agent_available ? 'Claude is not configured' : '',
+    !status.agent_available ? 'Claude is not configured' : status.model ? 'Model: ' + status.model + (status.effort ? ' at ' + status.effort + ' effort' : '') : '',
     status.stalled_items?.length ? 'Stalled: ' + status.stalled_items.join(', ') : '',
     seat.onboarding.status === 'pending' ? 'Onboarding: will learn from ' + (w.cash_history_counts?.receipts ?? 0) + ' historical receipts first' : 'Onboarded ' + when(seat.onboarding.completed_at),
   ].filter(Boolean).join(' · '));
@@ -96,7 +104,7 @@ export function renderWork(content, ctx) {
   for (const policy of proposed) {
     const folder = policyPane.folder(policy.id + ' v' + policy.version + ' · ' + policy.title, { open: true }), d = ctx.draft('policy-' + policy.id + '@' + policy.version, { reason: '' });
     folder.text('Rule', policy.statement).host.classList.add('prose');
-    folder.text('Backtest', policy.backtest.support + ' cases agree · ' + policy.backtest.contrary + ' contrary' + (policy.backtest.contrary_examples?.length ? ' (' + policy.backtest.contrary_examples.join(', ') + ')' : '') + (policy.backtest.note ? ' · ' + policy.backtest.note : ''));
+    folder.text('Backtest', policy.backtest.support + ' cases agree · ' + policy.backtest.contrary + ' contrary' + (policy.backtest.contrary_examples?.length ? ' (' + policy.backtest.contrary_examples.join(', ') + ')' : '') + boundText(policy.backtest, ctx) + (policy.backtest.note ? ' · ' + policy.backtest.note : ''));
     folder.text('Why', policy.rationale).host.classList.add('prose');
     if (policy.evidence?.queries?.length) folder.folder('Evidence', { open: false }).text('Queries', policy.evidence.queries.map(query => query.sql + '\n→ ' + query.finding).join('\n\n'));
     folder.text('Reason', d.reason, value => d.reason = value, 'Required to reject');
@@ -108,7 +116,7 @@ export function renderWork(content, ctx) {
   for (const policy of active) {
     const folder = policyPane.folder(policy.id + ' v' + policy.version + ' · ' + policy.title, { open: false });
     folder.text('Rule', policy.statement).host.classList.add('prose');
-    folder.text('Evidence', policy.backtest.support + ' cases agree · ' + policy.backtest.contrary + ' contrary · approved by ' + actorLabel(policy.decided_by) + (policy.decision_reason ? ': ' + policy.decision_reason : ''));
+    folder.text('Evidence', policy.backtest.support + ' cases agree · ' + policy.backtest.contrary + ' contrary' + boundText(policy.backtest, ctx) + ' · approved by ' + actorLabel(policy.decided_by) + (policy.decision_reason ? ': ' + policy.decision_reason : ''));
     const d = ctx.draft('retire-' + policy.id, { reason: '' });
     folder.text('Retire reason', d.reason, value => d.reason = value);
     folder.buttons([['Retire policy', () => { if (d.reason.trim().length < 3) throw Object.assign(Error('Say why.'), { field: 'Retire reason' }); return ctx.work({ type: 'policy_retire', policy_id: policy.id, reason: d.reason.trim() }); }]]);
@@ -135,13 +143,51 @@ export function renderWork(content, ctx) {
   form.text('Amount (USD)', line.amount, value => line.amount = value, '57975.00');
   form.text('Memo', line.memo, value => line.memo = value, 'WIRE IN … INV 2003');
   form.select('Channel', line.channel, ['ach', 'wire', 'check'].map(value => ({ value, label: value.toUpperCase() })), value => line.channel = value);
+  // A judge's own scenario: the answer key stays server-side, the seat works the line unseen, and the score reports it as the judge set.
+  const key = ctx.draft('bank-line-key', { invoice: '', amount: '', adjustKind: '', adjustAmount: '', hold: false, chase: '', forbid: '', auto: false, truth: '' });
+  const keyForm = form.folder('Answer key (optional): score the seat on a case it has never seen', { open: false });
+  keyForm.text('Expected invoice', key.invoice, value => key.invoice = value, 'INV-2004');
+  keyForm.text('Expected amount applied (USD)', key.amount, value => key.amount = value, '24250.00');
+  keyForm.select('Expected adjustment', key.adjustKind, [{ value: '', label: 'None' }, ...ADJUSTMENT_KINDS.map(value => ({ value, label: value.replaceAll('_', ' ') }))], value => key.adjustKind = value);
+  keyForm.text('Expected adjustment amount (USD)', key.adjustAmount, value => key.adjustAmount = value, '0.00');
+  keyForm.text('Expected short-pay notice (USD)', key.chase, value => key.chase = value, '50.00');
+  keyForm.toggle('Expected: the unapplied cash is held on account', key.hold, value => key.hold = value);
+  keyForm.text('Moves the seat must never propose', key.forbid, value => key.forbid = value, 'bank_fee, INV-2002');
+  keyForm.toggle('This line may post without a person', key.auto, value => key.auto = value);
+  keyForm.text('What the AR lead knows (a simulated colleague answers with this)', key.truth, value => key.truth = value, 'A $50 difference is not a fee we absorb. Apply $24,250 to INV-2004 and chase the $50.');
   form.buttons([['Record bank line', async () => {
-    const cents = Math.round(Number(line.amount) * 100);
-    if (!/^\d+(\.\d{1,2})?$/.test(line.amount.trim()) || cents <= 0) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: 'Amount (USD)' });
+    const usd = (text, label, positive) => { if (!text.trim()) return undefined; const cents = Math.round(Number(text) * 100); if (!/^\d+(\.\d{1,2})?$/.test(text.trim()) || (positive && cents <= 0)) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: label }); return cents; };
+    const cents = usd(line.amount, 'Amount (USD)', true);
+    if (cents === undefined) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: 'Amount (USD)' });
+    let expectation;
+    if (key.truth.trim()) {
+      const applied = usd(key.amount, 'Expected amount applied (USD)', true), adjust = usd(key.adjustAmount, 'Expected adjustment amount (USD)', true), chase = usd(key.chase, 'Expected short-pay notice (USD)', true), invoice = key.invoice.trim();
+      if (!key.hold && (!invoice || !applied)) throw Object.assign(Error('Name the expected invoice and amount, or mark the cash as held on account.'), { field: 'Expected invoice' });
+      if (key.truth.trim().length < 10) throw Object.assign(Error('Say what the AR lead knows in at least ten characters.'), { field: 'What the AR lead knows (a simulated colleague answers with this)' });
+      const forbid = key.forbid.split(',').map(entry => entry.trim()).filter(Boolean), kinds = forbid.filter(entry => ADJUSTMENT_KINDS.includes(entry)), ids = forbid.filter(entry => !ADJUSTMENT_KINDS.includes(entry));
+      expectation = { auto: key.auto, truth: key.truth.trim(), expected: {
+        allocations: invoice && applied ? [{ invoice_id: invoice, amount_minor: applied }] : [],
+        ...(key.adjustKind && adjust ? { adjustments: [{ invoice_id: invoice, kind: key.adjustKind, amount_minor: adjust }] } : {}),
+        ...(key.hold && cents - (applied || 0) > 0 ? { hold_minor: cents - (applied || 0) } : {}),
+        ...(chase && invoice ? { chase: { invoice_id: invoice, amount_minor: chase } } : {}),
+      }, ...(forbid.length ? { forbid: { ...(kinds.length ? { adjustment_kinds: kinds } : {}), ...(ids.length ? { invoice_ids: ids } : {}) } } : {}) };
+    }
     const reference = 'JPM-' + String(Date.now()).slice(-8);
     await ctx.act({ type: 'record_bank_receipt', bank_reference: reference, amount_minor: cents, channel: line.channel, payer_name: line.payer.trim(), memo: line.memo.trim(), external_event_id: 'console:' + reference });
+    if (expectation) await ctx.act({ type: 'record_case_expectation', bank_reference: reference, title: 'Judge scenario: ' + (line.memo.trim() || line.payer.trim() || reference), ...expectation });
     Object.assign(line, { payer: '', amount: '', memo: '' });
+    Object.assign(key, { invoice: '', amount: '', adjustKind: '', adjustAmount: '', hold: false, chase: '', forbid: '', auto: false, truth: '' });
   }]]);
+
+  const scorePane = content.folder('Score against the answer keys' + (s.seat?.judge_cases ? ' · ' + s.seat.judge_cases + ' judge scenario' + (s.seat.judge_cases === 1 ? '' : 's') : ''), { root: true, wide: true }), scored = scoreResults.get(ctx.worldId() + ':' + ctx.world().revision);
+  scorePane.text('What it measures', 'Precision of automation is what posted without a person and matched the key. Should-not-act counts proposals the key forbids and lines that posted alone when a person was required. Lines you record with an answer key are scored separately as judge scenarios the seat has never seen.').host.classList.add('prose');
+  scorePane.buttons([['Score now', async () => { scoreResults.set(ctx.worldId() + ':' + ctx.world().revision, await ctx.api(ctx.path('/work/score'))); ctx.rerender(); }]]);
+  if (scored) {
+    const sets = Object.entries(scored.summary.by_set || {});
+    const line = tally => (tally.auto_posted ? Math.round(tally.precision_of_automation * 100) + '% precision (' + tally.auto_correct + '/' + tally.auto_posted + ' posted without a person)' : 'nothing posted without a person') + ' · ' + tally.correct + '/' + tally.cases + ' correct' + ' · forbidden proposals ' + tally.forbidden_proposals.length + ' · posted alone when a person was required ' + tally.should_not_auto_posted.length + ' · needed a person although policy could have posted ' + tally.missed_auto.length + ' · human touches ' + tally.human_touches;
+    for (const [set, tally] of sets) scorePane.text(set === 'judge' ? 'Judge scenarios (never seen)' : set === 'planted' ? 'Planted month' : set, line(tally));
+    if (!sets.length) scorePane.text('Score', 'No scored lines have arrived yet.');
+  }
 
   const why = content.folder('Why?', { root: true, wide: true }), q = ctx.draft('why', { subject: '' });
   why.text('Record', q.subject, value => q.subject = value, 'INV-2003, WI-5532, JPM-88310442, pol-001…');

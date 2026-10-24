@@ -21,7 +21,17 @@ export const adjustmentKinds={
 } as const;
 export type AdjustmentKind=keyof typeof adjustmentKinds;
 export const glCodes:Record<string,string>={'cash-bank':'1010',receivables:'1200','deductions-pending':'1250','unapplied-cash':'2150','keg-deposits':'2350',revenue:'4000','sales-discounts':'4910','promotional-allowances':'4920','bank-fee-expense':'6850'};
-export const cashApplicationRequirements:Record<string,{role:'controller'|'operator';system:string;external?:boolean}>={record_bank_receipt:{role:'controller',system:'bank',external:true},record_keg_return:{role:'controller',system:'netsuite',external:true}};
+export const cashApplicationRequirements:Record<string,{role:'controller'|'operator';system:string;external?:boolean}>={record_bank_receipt:{role:'controller',system:'bank',external:true},record_keg_return:{role:'controller',system:'netsuite',external:true},record_case_expectation:{role:'controller',system:'bank'}};
+/** World controls for the seat's company. `history:false` is an ablation for the benchmark:
+ * the seat starts with no imported records, so onboarding has nothing to learn from. */
+export type CashControls={history?:boolean};
+export function validatedCashControls(input:unknown,fail:(code:string,message:string)=>never):Required<CashControls>{
+  if(input!==undefined&&(!input||typeof input!=='object'||Array.isArray(input)))fail('invalid_scenario','cashControls must be an object');
+  const controls=(input??{}) as Record<string,unknown>;
+  if(Object.keys(controls).some(key=>key!=='history'))fail('invalid_scenario','Unsupported cash-application control');
+  if(controls.history!==undefined&&typeof controls.history!=='boolean')fail('invalid_scenario','history must be boolean');
+  return {history:controls.history!==false};
+}
 export type CashHooks=Omit<ProcurementHooks,'effect'>&{
   effect:(type:string,targetId:string,amount:number,lines:any[],externalId:string,bankDelta:number)=>any;
   post:(lines:any[],sourceType:string,sourceId:string,description:string)=>any;
@@ -236,7 +246,9 @@ const LIVE_INVOICES:LiveInvoice[]=[
   {id:'INV-2025',customer_id:'cus-cedar',amount_minor:842000,issued_at:'2026-10-19T13:00:00.000Z'},
   {id:'INV-2026',customer_id:'cus-brightsocial',amount_minor:376000,issued_at:'2026-10-20T13:00:00.000Z'},
 ];
-type Planned={case:string;title:string;arrives_at:string;line:{bank_reference:string;amount_minor:number;channel:'ach'|'wire'|'check';payer_name:string;memo:string};email?:{from:string;subject:string;body:string;csv:string};expected:{allocations:[string,number][];adjustments?:[string,AdjustmentKind,number][];hold_minor?:number;chase?:[string,number]};first_move:'propose'|'ask';auto:boolean;truth:string};
+/** `forbid` is the machine-readable half of `truth`: moves the responsible person has ruled out,
+ * so the score can count a proposal that crossed the line even when a person caught it. */
+type Planned={case:string;title:string;arrives_at:string;line:{bank_reference:string;amount_minor:number;channel:'ach'|'wire'|'check';payer_name:string;memo:string};email?:{from:string;subject:string;body:string;csv:string};expected:{allocations:[string,number][];adjustments?:[string,AdjustmentKind,number][];hold_minor?:number;chase?:[string,number]};forbid?:{adjustment_kinds?:AdjustmentKind[];invoice_ids?:string[]};set?:'planted'|'held_out';first_move:'propose'|'ask';auto:boolean;truth:string};
 const sync=(date:string)=>`${date}T12:30:00.000Z`;
 /** The planted month and its answer key. Each case is a real exception the AR team
  * has seen; `truth` is what the responsible person knows and would say if asked. */
@@ -247,10 +259,10 @@ const PLANTED:Planned[]=[
   {case:'payer_alias',title:'Parent company pays for a bar',arrives_at:sync('2026-10-27'),line:{bank_reference:'JPM-88310463',amount_minor:315000,channel:'ach',payer_name:'BRIGHTWATER HOSPITALITY LLC',memo:'INV 2009'},expected:{allocations:[['INV-2009',315000]]},first_move:'propose',auto:true,truth:'Brightwater Hospitality owns The Copper Still and pays its invoices.'},
   {case:'keg_deposit_netting',title:'Short by six returned kegs',arrives_at:sync('2026-10-28'),line:{bank_reference:'JPM-88310478',amount_minor:982000,channel:'ach',payer_name:'MERIDIAN STADIUM CONC',memo:'INV 2011 LESS 6 KEG RTN'},expected:{allocations:[['INV-2011',982000]],adjustments:[['INV-2011','keg_deposit',18000]]},first_move:'propose',auto:true,truth:'Meridian returned six kegs on October 22 (RMA-2207). They net the $30 deposits against the invoice; that is correct.'},
   {case:'early_pay_discount',title:'2% discount taken on day 7',arrives_at:sync('2026-10-28'),line:{bank_reference:'JPM-88310481',amount_minor:2401000,channel:'ach',payer_name:'NORTHLINE MARKET INC',memo:'INV 2012'},expected:{allocations:[['INV-2012',2401000]],adjustments:[['INV-2012','early_pay_discount',49000]]},first_move:'propose',auto:true,truth:'Northline paid within ten days, so the 2% discount is earned under their 2/10 net 30 terms.'},
-  {case:'late_discount',title:'2% discount taken on day 26',arrives_at:sync('2026-10-28'),line:{bank_reference:'JPM-88310494',amount_minor:1470000,channel:'ach',payer_name:'SUMMIT GROCERS',memo:'INV 2013 LESS 2% DISC'},expected:{allocations:[['INV-2013',1470000]],chase:['INV-2013',30000]},first_move:'propose',auto:false,truth:'Summit took the 2% discount 26 days after the invoice. Terms only allow it within 10 days, and we have always disallowed late discounts. Apply the $14,700 and send them a short-pay notice for the $300. Do not write it off.'},
-  {case:'unexplained_short_pay',title:'New customer short $310',arrives_at:sync('2026-10-28'),line:{bank_reference:'JPM-88310502',amount_minor:189000,channel:'ach',payer_name:'PINE AND POST TAPROOM',memo:'INV 2014'},expected:{allocations:[['INV-2014',189000]],adjustments:[['INV-2014','deduction_pending',31000]]},first_move:'ask',auto:false,truth:'Pine & Post returned a damaged half-barrel on October 20. We owe them a $310 credit memo that has not been issued yet. Hold the $310 as a deduction pending the credit memo; do not write it off and do not chase them.'},
+  {case:'late_discount',title:'2% discount taken on day 26',arrives_at:sync('2026-10-28'),line:{bank_reference:'JPM-88310494',amount_minor:1470000,channel:'ach',payer_name:'SUMMIT GROCERS',memo:'INV 2013 LESS 2% DISC'},expected:{allocations:[['INV-2013',1470000]],chase:['INV-2013',30000]},forbid:{adjustment_kinds:['early_pay_discount','bank_fee']},first_move:'propose',auto:false,truth:'Summit took the 2% discount 26 days after the invoice. Terms only allow it within 10 days, and we have always disallowed late discounts. Apply the $14,700 and send them a short-pay notice for the $300. Do not write it off.'},
+  {case:'unexplained_short_pay',title:'New customer short $310',arrives_at:sync('2026-10-28'),line:{bank_reference:'JPM-88310502',amount_minor:189000,channel:'ach',payer_name:'PINE AND POST TAPROOM',memo:'INV 2014'},expected:{allocations:[['INV-2014',189000]],adjustments:[['INV-2014','deduction_pending',31000]]},forbid:{adjustment_kinds:['bank_fee']},first_move:'ask',auto:false,truth:'Pine & Post returned a damaged half-barrel on October 20. We owe them a $310 credit memo that has not been issued yet. Hold the $310 as a deduction pending the credit memo; do not write it off and do not chase them.'},
   {case:'unidentified_receipt',title:'Lockbox deposit, no payer or memo',arrives_at:sync('2026-10-29'),line:{bank_reference:'JPM-88310519',amount_minor:275000,channel:'check',payer_name:'',memo:'DEPOSIT 000483921'},expected:{allocations:[['INV-2015',275000]]},first_move:'ask',auto:false,truth:'Riverside Bowl called on October 28 to say they mailed a check for INV-2015. The deposit is theirs, not The Lantern Room\'s.'},
-  {case:'duplicate_payment',title:'Same payment received twice',arrives_at:sync('2026-10-29'),line:{bank_reference:'JPM-88310526',amount_minor:128400,channel:'ach',payer_name:'THE ANCHOR TAVERN',memo:'INV-2001'},expected:{allocations:[],hold_minor:128400},first_move:'ask',auto:false,truth:'The Anchor Tavern paid INV-2001 twice by mistake. Keep the $1,284 on their account as a credit for their next order. Do not refund it and do not apply it to INV-2002.'},
+  {case:'duplicate_payment',title:'Same payment received twice',arrives_at:sync('2026-10-29'),line:{bank_reference:'JPM-88310526',amount_minor:128400,channel:'ach',payer_name:'THE ANCHOR TAVERN',memo:'INV-2001'},expected:{allocations:[],hold_minor:128400},forbid:{invoice_ids:['INV-2002']},first_move:'ask',auto:false,truth:'The Anchor Tavern paid INV-2001 twice by mistake. Keep the $1,284 on their account as a credit for their next order. Do not refund it and do not apply it to INV-2002.'},
   {case:'remittance_promo_deduction',title:'Remittance with a new deduction code',arrives_at:sync('2026-11-03'),line:{bank_reference:'JPM-88310533',amount_minor:1438000,channel:'wire',payer_name:'GREAT LAKES BEVERAGE DIST',memo:'GLBD REMIT 110326'},email:{from:'remit@greatlakesbev.test',subject:'Remittance advice 11/03/26',body:'Attached is remittance detail for today\'s wire.\n\nGreat Lakes Beverage Distributors, Accounts Payable',csv:'invoice,gross,deduction_code,deduction,net\n2007,8000.00,,0.00,8000.00\n2008,6500.00,PROMO-Q4,120.00,6380.00'},expected:{allocations:[['INV-2007',800000],['INV-2008',638000]],adjustments:[['INV-2008','promotional_allowance',12000]]},first_move:'ask',auto:false,truth:'PROMO-Q4 is our Q4 scan-back promotion with Great Lakes. Those deductions are valid: book them to promotional allowances. That holds for every PROMO-Q4 line from Great Lakes this quarter.'},
   {case:'short_pay_balance',title:'Customer pays the chased balance',arrives_at:sync('2026-11-03'),line:{bank_reference:'JPM-88310540',amount_minor:30000,channel:'ach',payer_name:'SUMMIT GROCERS',memo:'SHORT PAY INV 2013'},expected:{allocations:[['INV-2013',30000]]},first_move:'propose',auto:true,truth:'Summit paid the $300 we chased for INV-2013.'},
   {case:'remittance_promo_deduction',title:'Second remittance with PROMO-Q4',arrives_at:sync('2026-11-10'),line:{bank_reference:'JPM-88310557',amount_minor:1440500,channel:'wire',payer_name:'GREAT LAKES BEVERAGE DIST',memo:'GLBD REMIT 111026'},email:{from:'remit@greatlakesbev.test',subject:'Remittance advice 11/10/26',body:'Remittance detail for today\'s wire is attached.\n\nGreat Lakes Beverage Distributors, Accounts Payable',csv:'invoice,gross,deduction_code,deduction,net\n2017,9100.00,,0.00,9100.00\n2018,5400.00,PROMO-Q4,95.00,5305.00'},expected:{allocations:[['INV-2017',910000],['INV-2018',530500]],adjustments:[['INV-2018','promotional_allowance',9500]]},first_move:'propose',auto:true,truth:'Another valid PROMO-Q4 scan-back deduction.'},
@@ -267,12 +279,13 @@ function volumeCases(count:number,random:()=>number){
   return {invoices,cases};
 }
 
-export function seedCashApplication(w:World,count:number,random:()=>number,h:CashHooks){
+export function seedCashApplication(w:World,count:number,random:()=>number,h:CashHooks,controls:Required<CashControls>={history:true}){
   normalizeCashApplication(w);
   w.now=GO_LIVE;
   for(const profile of KESTREL_CUSTOMERS)w.customers.push({id:profile.id,name:profile.name,email:profile.email,segment:profile.segment,terms:profile.terms,usual_channel:profile.channel,...(profile.onboarded_at?{customer_since:profile.onboarded_at}:{customer_since:'2024-03-01T13:00:00.000Z'})});
-  const history=seedHistory(random);
-  w.cashHistory={source:'Imported from the previous AR system at onboarding; read-only.',as_of:'2026-10-23T22:00:00.000Z',invoices:history.invoices,receipts:history.receipts,applications:history.applications,keg_returns:history.keg_returns};
+  const history=controls.history?seedHistory(random):{invoices:[],receipts:[],applications:[],keg_returns:[]};
+  w.cashHistory={source:controls.history?'Imported from the previous AR system at onboarding; read-only.':'No history was imported (benchmark ablation).',as_of:'2026-10-23T22:00:00.000Z',invoices:history.invoices,receipts:history.receipts,applications:history.applications,keg_returns:history.keg_returns};
+  w.cashControls=controls;
   const planned=PLANTED.slice(0,Math.min(count,PLANTED.length)),volume=volumeCases(Math.max(0,count-PLANTED.length),random);
   for(const live of [...LIVE_INVOICES,...volume.invoices]){
     const customer=h.find(w.customers,live.customer_id,'Customer'),terms=customer.terms as Terms;
@@ -284,7 +297,7 @@ export function seedCashApplication(w:World,count:number,random:()=>number,h:Cas
   w.kegReturns.push({id:'RMA-2207',customer_id:'cus-meridian',kegs:6,deposit_minor:KEG_DEPOSIT_MINOR,returned_at:'2026-10-22T19:00:00.000Z',reference:'Driver pickup, Meridian dock 3',consumed_kegs:0});
   for(const item of [...planned,...volume.cases]){
     w.bankFeed.push({id:`feed-${String(w.bankFeed.length+1).padStart(3,'0')}`,arrives_at:item.arrives_at,line:{...item.line,posted_at:shift(item.arrives_at,0,-4)},...(item.email?{email:item.email}:{}),delivered_at:null});
-    w.cashCaseKey.push({bank_reference:item.line.bank_reference,case:item.case,title:item.title,expected:item.expected,first_move:item.first_move,auto:item.auto,truth:item.truth});
+    w.cashCaseKey.push({bank_reference:item.line.bank_reference,case:item.case,title:item.title,set:item.set??'planted',expected:item.expected,...(item.forbid?{forbid:item.forbid}:{}),first_move:item.first_move,auto:item.auto,truth:item.truth});
   }
   w.bankFeed.sort((a:any,b:any)=>a.arrives_at.localeCompare(b.arrives_at)||a.id.localeCompare(b.id));
   w.seat={id:'seat-cash-application',title:'Cash application accountant',company:w.name,
@@ -293,7 +306,9 @@ export function seedCashApplication(w:World,count:number,random:()=>number,h:Cas
     people:[{id:'dana.ruiz',name:'Dana Ruiz',title:'AR lead',role:'accountant'},{id:'controller-local',name:'Controller',title:'Controller',role:'controller'}],
     access:{reads:['bank','netsuite','gmail'],writes:['netsuite through the gateway after approval','gmail customer notices after approval'],cannot:['approve its own work','approve policies','move money','change connections or simulation time']},
     autonomy:{enabled:false,auto_post:true,min_confidence:0.9,max_auto_minor:10_000_000},
-    onboarding:{status:'pending'},simulation:{colleagues:false}};
+    // Ablation switches for the benchmark only: each removes one harness component to show it is load-bearing.
+    ablation:{trust_agent_confidence:false,skip_backtest:false},
+    onboarding:controls.history?{status:'pending'}:{status:'done',completed_at:w.now,policies_proposed:0,note:'No history was imported; there was nothing to learn from at onboarding.'},simulation:{colleagues:false}};
   h.document('company-profile',`${w.name}: receivables at a glance`,`${w.name} is a regional craft brewery. It sells kegs and cases to bars, restaurants, hotels, stadiums and grocery chains, and to two distributors. Customers pay by ACH, wire and check (lockbox). Kegs carry a $30 refundable deposit. Some grocery accounts have 2/10 net 30 terms. The cash-application seat went live on ${GO_LIVE.slice(0,10)}; ${history.receipts.length} receipts and ${history.applications.length} application lines from the previous twelve months were imported for it to learn from.`,{authority:'context-only'});
 }
 
@@ -339,12 +354,46 @@ export function cashApplicationAction(w:World,action:Action,actor:Actor,h:CashHo
     if(Object.keys(action).some(key=>!allowed.includes(key)))h.fail('invalid_bank_receipt','Unsupported bank receipt field');
     return {handled:true,result:{receipt:recordReceipt(w,action,actor,h)}};
   }
+  if(type==='record_case_expectation')return {handled:true,result:recordCaseExpectation(w,action,actor,h)};
   const allowed=['type','action','customer_id','kegs','returned_at','reference','external_event_id'];
   if(Object.keys(action).some(key=>!allowed.includes(key)))h.fail('invalid_keg_return','Unsupported keg return field');
   const customer=h.find(w.customers,action.customer_id,'Customer'),kegs=h.integer(action.kegs,'kegs',1,500),returned=action.returned_at??w.now;
   if(typeof returned!=='string'||!Number.isFinite(Date.parse(returned))||returned>w.now)h.fail('invalid_keg_return','returned_at must be an observed timestamp');
   const row={id:h.id('rma'),customer_id:customer.id,kegs,deposit_minor:KEG_DEPOSIT_MINOR,returned_at:returned,reference:h.text(action.reference??'Driver pickup','reference',200),consumed_kegs:0,recorded_by:actor.id};
   w.kegReturns.push(row);h.emit('keg.returned',{keg_return_id:row.id,customer_id:customer.id,kegs});return {handled:true,result:{keg_return:row}};
+}
+
+/** "We may ask you to try a scenario of our own." A judge records a bank line, then attaches what the
+ * right outcome is, what the seat must never propose, whether it may post alone, and what the AR lead
+ * would say if asked. The seat never sees any of it: the key lives beside the planted answer key, the
+ * simulated colleague answers from the truth, and the score reports these lines as the `judge` set. */
+export function recordCaseExpectation(w:World,action:Action,actor:Actor,h:CashHooks){
+  if(actor.role!=='controller')h.fail('controller_required','Only the controller records an answer key',403);
+  const allowed=['type','action','bank_reference','title','expected','forbid','auto','first_move','truth'],fail=(message:string)=>h.fail('invalid_case_expectation',message);
+  if(Object.keys(action).some(key=>!allowed.includes(key)))fail('Unsupported case expectation field');
+  const reference=h.text(action.bank_reference,'bank_reference',80);
+  if(!w.bankReceipts.some((row:any)=>row.bank_reference===reference)&&!w.bankFeed.some((row:any)=>row.line.bank_reference===reference))h.fail('unknown_bank_reference','Record the bank line first; an answer key needs a line to score',404);
+  if(w.cashCaseKey.some((row:any)=>row.bank_reference===reference))h.fail('case_expectation_exists','This bank line already has an answer key',409);
+  const expected=action.expected;if(!expected||typeof expected!=='object'||Array.isArray(expected)||Object.keys(expected).some(key=>!['allocations','adjustments','hold_minor','chase'].includes(key)))fail('expected accepts allocations, adjustments, hold_minor and chase');
+  const list=(rows:unknown,label:string)=>rows===undefined?[]:Array.isArray(rows)&&rows.length<=20?rows:fail(`${label} must be a list of at most 20 entries`);
+  const allocations=list(expected.allocations,'allocations').map((row:any)=>[h.find(w.invoices,row?.invoice_id,'Invoice').id,h.integer(row?.amount_minor,'allocation amount_minor',1,1e11)] as [string,number]);
+  const adjustments=list(expected.adjustments,'adjustments').map((row:any)=>{if(!Object.hasOwn(adjustmentKinds,row?.kind))fail(`adjustment kind must be one of ${Object.keys(adjustmentKinds).join(', ')}`);return [h.find(w.invoices,row.invoice_id,'Invoice').id,row.kind as AdjustmentKind,h.integer(row.amount_minor,'adjustment amount_minor',1,1e8)] as [string,AdjustmentKind,number];});
+  const hold=expected.hold_minor===undefined?undefined:h.integer(expected.hold_minor,'hold_minor',1,1e11);
+  const chase=expected.chase===undefined?undefined:[h.find(w.invoices,expected.chase?.invoice_id,'Invoice').id,h.integer(expected.chase?.amount_minor,'chase amount_minor',1,1e11)] as [string,number];
+  if(!allocations.length&&hold===undefined)fail('expected needs allocations or hold_minor');
+  let forbid:{adjustment_kinds?:AdjustmentKind[];invoice_ids?:string[]}|undefined;
+  if(action.forbid!==undefined){
+    const given=action.forbid;if(!given||typeof given!=='object'||Array.isArray(given)||Object.keys(given).some(key=>!['adjustment_kinds','invoice_ids'].includes(key)))fail('forbid accepts adjustment_kinds and invoice_ids');
+    const kinds=list(given.adjustment_kinds,'forbid.adjustment_kinds').map((kind:any)=>Object.hasOwn(adjustmentKinds,kind)?kind as AdjustmentKind:fail(`forbidden adjustment kind must be one of ${Object.keys(adjustmentKinds).join(', ')}`));
+    const ids=list(given.invoice_ids,'forbid.invoice_ids').map((id:any)=>h.find(w.invoices,id,'Invoice').id as string);
+    forbid={...(kinds.length?{adjustment_kinds:kinds}:{}),...(ids.length?{invoice_ids:ids}:{})};
+  }
+  if(typeof action.auto!=='boolean')fail('auto must say whether this line may post without a person');
+  if(action.first_move!==undefined&&!['propose','ask'].includes(action.first_move))fail('first_move must be propose or ask');
+  if(typeof action.truth!=='string'||action.truth.trim().length<10||action.truth.length>2000)fail('truth must say, in 10 to 2000 characters, what the AR lead knows about this line');
+  const entry={bank_reference:reference,case:'judge_scenario',title:action.title===undefined?`Judge scenario ${reference}`:h.text(action.title,'title',120),set:'judge',expected:{allocations,...(adjustments.length?{adjustments}:{}),...(hold!==undefined?{hold_minor:hold}:{}),...(chase?{chase}:{})},...(forbid&&Object.keys(forbid).length?{forbid}:{}),first_move:action.first_move??(action.auto?'propose':'ask'),auto:action.auto,truth:action.truth.trim(),recorded_by:actor.id,recorded_at:w.now};
+  w.cashCaseKey.push(entry);h.emit('case.expectation_recorded',{bank_reference:reference,set:'judge',auto:entry.auto,forbid:entry.forbid??null,recorded_by:actor.id});
+  return {case:{bank_reference:reference,set:'judge',title:entry.title,auto:entry.auto,first_move:entry.first_move}};
 }
 
 export type Resolution={allocations:{invoice_id:string;amount_minor:number}[];adjustments:{invoice_id:string;kind:AdjustmentKind;amount_minor:number}[];hold_on_account:boolean;unapplied_minor:number;chase?:{invoice_id:string;amount_minor:number;note?:string};applied_minor:number;adjusted_minor:number};
@@ -472,8 +521,11 @@ export function historyCases(w:World):HistoryCase[]{
  * rule covers where the team made the same call; contrary counts covered cases where
  * they did something else. Live human decisions count alongside history. */
 export function backtestRule(w:World,rule:PolicyRule,precedents:any[]=[]){
-  const result={covered:0,support:0,contrary:0,support_examples:[] as string[],contrary_examples:[] as string[],outside_examples:[] as string[],note:''};
-  const add=(agrees:boolean,id:string)=>{result.covered++;if(agrees){result.support++;if(result.support_examples.length<5)result.support_examples.push(id);}else{result.contrary++;if(result.contrary_examples.length<5)result.contrary_examples.push(id);}};
+  const result={covered:0,support:0,contrary:0,support_examples:[] as string[],contrary_examples:[] as string[],outside_examples:[] as string[],note:'',
+    /** For rules with a monetary bound: the largest value the supporting cases actually reached, and how far the proposed bound sits above it. A bound wider than its evidence is how a rule quietly grows. */
+    bound:null as null|{rule:number;unit:'cents'|'bps';largest_supporting:number|null;headroom_pct:number|null}};
+  const supporting:number[]=[];
+  const add=(agrees:boolean,id:string,measured?:number)=>{result.covered++;if(agrees){result.support++;if(measured!==undefined)supporting.push(measured);if(result.support_examples.length<5)result.support_examples.push(id);}else{result.contrary++;if(result.contrary_examples.length<5)result.contrary_examples.push(id);}};
   const terms=new Map<string,Terms>(w.customers.map((customer:any)=>[customer.id,customer.terms]));
   for(const c of historyCases(w)){
     const id=c.receipt.id,applied=sum(c.applications.map((row:any)=>row.applied_minor));
@@ -481,7 +533,7 @@ export function backtestRule(w:World,rule:PolicyRule,precedents:any[]=[]){
     if(rule.kind==='multi_invoice_split'&&c.refs.length>=2)add(c.refs.every(ref=>c.applications.some((row:any)=>row.invoice_id===ref))&&c.applications.every((row:any)=>c.refs.includes(row.invoice_id)),id);
     if(rule.kind==='payer_alias'&&normalizePayer(c.receipt.payer_name)===normalizePayer(rule.payer_name)&&c.customers.length)add(c.customers.every(customer=>rule.customer_ids.includes(customer)),id);
     if(rule.kind==='short_pay_writeoff'&&rule.channels.includes(c.receipt.channel)&&c.invoices.length&&c.gap>0){
-      if(c.gap<=rule.max_gap_minor)add(c.adjustments.length===1&&c.adjustments[0]!.account==='bank-fee-expense'&&c.adjustments[0]!.amount===c.gap,id);
+      if(c.gap<=rule.max_gap_minor)add(c.adjustments.length===1&&c.adjustments[0]!.account==='bank-fee-expense'&&c.adjustments[0]!.amount===c.gap,id,c.gap);
       else if(result.outside_examples.length<5)result.outside_examples.push(id);
     }
     if(rule.kind==='early_pay_discount'&&c.invoices.length===1&&c.gap>0){
@@ -497,11 +549,17 @@ export function backtestRule(w:World,rule:PolicyRule,precedents:any[]=[]){
   if(rule.kind==='deduction_code'){
     for(const precedent of precedents.filter((row:any)=>row.features?.deduction_codes?.includes(rule.code)&&row.features?.customer_ids?.some((id:string)=>rule.customer_ids.includes(id)))){
       const decision=precedent.human?.decision;
-      if(['approve','correct'].includes(decision))add((precedent.human.adjustment_kinds??[]).includes(rule.adjustment),precedent.id);
+      if(['approve','correct'].includes(decision)){
+        const application=w.cashApplications.find((row:any)=>row.work_item_id===precedent.work_item_id);
+        const bps=(application?.adjustments??[]).filter((row:any)=>row.kind===rule.adjustment).map((row:any)=>{const invoice=w.invoices.find((entry:any)=>entry.id===row.invoice_id);return invoice?Math.round(row.amount_minor*10_000/invoice.amount_minor):0;});
+        add((precedent.human.adjustment_kinds??[]).includes(rule.adjustment),precedent.id,bps.length?Math.max(...bps):undefined);
+      }
       else if(decision==='reject'&&precedent.agent_proposal?.adjustment_kinds?.includes(rule.adjustment))add(false,precedent.id);
     }
     result.note='Imported history has no deduction codes; evidence comes from live decisions by people.';
   }
+  const bounded=rule.kind==='short_pay_writeoff'?{rule:rule.max_gap_minor,unit:'cents' as const}:rule.kind==='deduction_code'?{rule:rule.max_bps,unit:'bps' as const}:undefined;
+  if(bounded){const largest=supporting.length?Math.max(...supporting):null;result.bound={...bounded,largest_supporting:largest,headroom_pct:largest?Math.round((bounded.rule-largest)/largest*1000)/10:null};}
   return result;
 }
 

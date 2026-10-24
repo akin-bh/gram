@@ -14,6 +14,11 @@ import {providerContracts,resolveProviderOperation,assertNoProviderCredentials} 
 import {manualJournalSystems} from './manual-journals.ts';
 
 const DEFAULT_MODEL = 'claude-sonnet-5-5';
+// The seat is one accountant doing judgment work all day; it runs on the current Opus with effort set
+// explicitly (Opus 5.5 defaults to medium) and falls back to Sonnet only if Opus is unavailable.
+const DEFAULT_SEAT_MODEL = 'claude-opus-5-5', DEFAULT_SEAT_FALLBACK_MODEL = 'claude-sonnet-5-5', DEFAULT_SEAT_EFFORT = 'high';
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type EffortLevel = typeof EFFORT_LEVELS[number];
 const ENV_FILE = Bun.fileURLToPath(new URL('../.env', import.meta.url));
 const MAX_AGENT_TURNS = 30;
 const MAX_AGENT_BUDGET_USD = 2;
@@ -48,11 +53,15 @@ function apiKey(): string | undefined {
   }
 }
 
-export function loadAgentConfig(): { available: boolean; model: string; reason?: string; maxTurns: number; maxBudgetUsd: number } {
+export function loadAgentConfig(): { available: boolean; model: string; seatModel: string; seatFallbackModel: string; seatEffort: EffortLevel; reason?: string; maxTurns: number; maxBudgetUsd: number } {
   const available = Boolean(apiKey());
+  const effort = process.env.FINANCE_WORLD_SEAT_EFFORT;
   return {
     available,
     model: process.env.FINANCE_WORLD_MODEL || DEFAULT_MODEL,
+    seatModel: process.env.FINANCE_WORLD_SEAT_MODEL || DEFAULT_SEAT_MODEL,
+    seatFallbackModel: process.env.FINANCE_WORLD_SEAT_FALLBACK_MODEL || DEFAULT_SEAT_FALLBACK_MODEL,
+    seatEffort: (EFFORT_LEVELS as readonly string[]).includes(effort ?? '') ? effort as EffortLevel : DEFAULT_SEAT_EFFORT,
     ...(!available ? { reason: 'Set ANTHROPIC_API_KEY to enable live Claude runs and scenario generation.' } : {}),
     maxTurns: MAX_AGENT_TURNS,
     maxBudgetUsd: MAX_AGENT_BUDGET_USD,

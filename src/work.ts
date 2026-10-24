@@ -10,7 +10,7 @@ import type {Action,Actor,World} from './world.ts';
 import {CASH_KIND,adjustmentKinds,assessConfidence,backtestRule,describeRule,dollars,evaluateCoverage,historyCases,normalizePayer,normalizeResolution,postApplication,receiptFeatures} from './cash-application.ts';
 import type {CashHooks,PolicyRule,Resolution} from './cash-application.ts';
 
-export type WorkRole='sync'|'ai_agent'|'accountant'|'controller'|'policy_engine'|'gateway';
+export type WorkRole='sync'|'ai_agent'|'accountant'|'controller'|'policy_engine'|'gateway'|'dispatcher';
 /** (state, action) -> next state. A reversal is a new transition, never a deletion. */
 export const TRANSITIONS:Record<string,Record<string,string>>={
   propose:{new:'proposed',answered:'proposed',rejected:'proposed'},
@@ -34,13 +34,16 @@ export const ROLES:Record<WorkRole,Record<string,string[]>>={
   controller:{work_item:['answer','guide','approve','reject','correct','close'],policy:['approve','reject','retire'],seat:['configure']},
   policy_engine:{work_item:['approve']},
   gateway:{work_item:['post','bounce','close','create'],seat:['onboarded']},
+  /** The host's scheduler. When the seat leaves an item untouched twice, the dispatcher hands it to a
+   * person instead of relaunching forever. It can do nothing else. */
+  dispatcher:{work_item:['escalate']},
 };
-export const SYNC:Actor={id:'sync',role:'system'} as any,GATEWAY:Actor={id:'gateway',role:'system'} as any,POLICY_ENGINE:Actor={id:'policy-engine',role:'system'} as any;
+export const SYNC:Actor={id:'sync',role:'system'} as any,GATEWAY:Actor={id:'gateway',role:'system'} as any,POLICY_ENGINE:Actor={id:'policy-engine',role:'system'} as any,DISPATCHER:Actor={id:'dispatcher',role:'system'} as any;
 export function workRole(actor:Actor):WorkRole|undefined{
   const role=actor?.role as string;
   if(role==='agent')return 'ai_agent';
   if(role==='controller'||role==='accountant')return role;
-  if(role==='system')return ({sync:'sync',gateway:'gateway','policy-engine':'policy_engine'} as Record<string,WorkRole>)[actor.id];
+  if(role==='system')return ({sync:'sync',gateway:'gateway','policy-engine':'policy_engine',dispatcher:'dispatcher'} as Record<string,WorkRole>)[actor.id];
 }
 export function can(actor:Actor,action:string,resource:{kind:string;proposed_by?:string|null}){
   const role=workRole(actor);if(!role||!ROLES[role][resource.kind]?.includes(action))return false;
@@ -56,6 +59,7 @@ export function normalizeWork(w:World){
   if(!w.seat)return;
   for(const key of ['workItems','workLog','questions','policies','precedents','handoffs'])w[key]??=[];
   w.workSeq??={item:5531,question:1,policy:1,precedent:301,handoff:1,log:1,proposal:1};
+  w.seat.ablation??={trust_agent_confidence:false,skip_backtest:false};
 }
 const sum=(values:number[])=>values.reduce((total,value)=>total+value,0);
 const clone=<T,>(value:T):T=>structuredClone(value);
@@ -123,6 +127,11 @@ export const policyRuleSchema=z.discriminatedUnion('kind',[
 ]);
 const canonical=(value:unknown)=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
 function ruleKey(rule:PolicyRule){const copy:any={...rule};for(const key of ['customer_ids','channels'])if(Array.isArray(copy[key]))copy[key]=[...copy[key]].sort();if(copy.payer_name)copy.payer_name=normalizePayer(copy.payer_name);return canonical(copy);}
+/** What a proposal would do, independent of its wording. A proposal a person rejected cannot
+ * come back under new words: the gateway compares what it does, not what it says. */
+const proposalFingerprint=(proposal:any)=>canonical(proposal.kind==='reminder'?{reminder:proposal.reminder}:{allocations:proposal.resolution?.allocations??[],adjustments:proposal.resolution?.adjustments??[],hold:Boolean(proposal.resolution?.hold_on_account),chase:proposal.resolution?.chase?{invoice_id:proposal.resolution.chase.invoice_id,amount_minor:proposal.resolution.chase.amount_minor}:null});
+/** Every proposal an item ever received, kept for the score and the "why" view. */
+const compactProposal=(proposal:any)=>({id:proposal.id,kind:proposal.kind,at:proposal.proposed_at,by:proposal.proposed_by,...(proposal.run_id?{run_id:proposal.run_id}:{}),allocations:proposal.resolution?.allocations?.map((row:any)=>row.invoice_id)??[],adjustment_kinds:[...new Set((proposal.resolution?.adjustments??[]).map((row:any)=>row.kind))],hold_on_account:Boolean(proposal.resolution?.hold_on_account),chase:proposal.resolution?.chase?.invoice_id??null,confidence:proposal.confidence,fingerprint:proposalFingerprint(proposal)});
 
 function gatewayPost(w:World,item:any,h:CashHooks){
   try{
@@ -155,13 +164,16 @@ function gatewayPost(w:World,item:any,h:CashHooks){
     return {bounced:error.code};
   }
 }
+/** Under the trust-agent ablation the gateway's own evidence check is switched off and the agent's
+ * stated confidence decides. It exists only to show, in the benchmark, what the gateway is for. */
+const trustedConfidence=(w:World,proposal:any)=>w.seat.ablation?.trust_agent_confidence?proposal.agent_confidence:proposal.confidence;
 function autonomyAllows(w:World,item:any,proposal:any){
-  const autonomy=w.seat.autonomy;
-  return autonomy.enabled&&autonomy.auto_post&&proposal.covered&&!proposal.needs_review&&proposal.confidence>=autonomy.min_confidence&&(item.amount_minor??0)<=autonomy.max_auto_minor;
+  const autonomy=w.seat.autonomy,covered=w.seat.ablation?.trust_agent_confidence?true:proposal.covered;
+  return autonomy.enabled&&autonomy.auto_post&&covered&&!proposal.needs_review&&trustedConfidence(w,proposal)>=autonomy.min_confidence&&(item.amount_minor??0)<=autonomy.max_auto_minor;
 }
 function autoApprove(w:World,item:any,h:CashHooks){
-  const proposal=item.proposal,names=proposal.policies.map((policy:any)=>`${policy.id} v${policy.version}`).join(', ');
-  transition(w,item,'approve',POLICY_ENGINE,{patch:{decision:{kind:'policy',by:'policy-engine',reason:`Covered by ${names}; confidence ${Math.round(proposal.confidence*100)}%`,at:w.now,resolution:proposal.resolution,policies:proposal.policies}},reason:`Covered by ${names}; confidence ${Math.round(proposal.confidence*100)}% ≥ ${Math.round(w.seat.autonomy.min_confidence*100)}%`,policy:proposal.policies,confidence:proposal.confidence},h);
+  const proposal=item.proposal,confidence=trustedConfidence(w,proposal),names=proposal.policies.length?proposal.policies.map((policy:any)=>`${policy.id} v${policy.version}`).join(', '):'no policy (ablation: the agent\'s own confidence was trusted)';
+  transition(w,item,'approve',POLICY_ENGINE,{patch:{decision:{kind:'policy',by:'policy-engine',reason:`Covered by ${names}; confidence ${Math.round(confidence*100)}%`,at:w.now,resolution:proposal.resolution,policies:proposal.policies}},reason:`Covered by ${names}; confidence ${Math.round(confidence*100)}% ≥ ${Math.round(w.seat.autonomy.min_confidence*100)}%`,policy:proposal.policies,confidence},h);
   return gatewayPost(w,item,h);
 }
 function evaluate(w:World,item:any,resolution:Resolution,agentConfidence:number){
@@ -186,7 +198,10 @@ export function workAction(w:World,action:Action,actor:Actor,h:CashHooks):{handl
       const receipt=receiptOf(w,item,h),resolution=normalizeResolution(w,receipt,action,h),assessed=evaluate(w,item,resolution,agentConfidence);
       proposal={id:`P-${w.workSeq.proposal++}`,kind:'cash_application',resolution,reason,evidence_ids:evidence,agent_confidence:agentConfidence,confidence:assessed.confidence.score,evidence_score:assessed.confidence.evidence,basis:assessed.confidence.basis,covered:assessed.coverage.covered,policies:assessed.coverage.policies,gaps:assessed.coverage.gaps,needs_review:action.needs_review===true,proposed_by:actor.id,proposed_at:w.now,...(runOf(actor)?{run_id:runOf(actor)}:{})};
     }
-    transition(w,item,'propose',actor,{patch:{proposal,open_question_id:null},reason,evidence,confidence:proposal.confidence,refs:proposal.resolution?.allocations?.map((row:any)=>row.invoice_id)??[]},h);
+    // A no from a person is final for that move. The same resolution cannot be proposed again, however it is worded.
+    const fingerprint=proposalFingerprint(proposal),repeat=(item.rejected_proposals??[]).find((row:any)=>row.fingerprint===fingerprint);
+    if(repeat)h.fail('repeat_proposal',`${repeat.proposal_id} proposed exactly this and ${repeat.by} rejected it: "${repeat.reason}". Change the proposal, ask a question, or escalate; do not resubmit it.`,409);
+    transition(w,item,'propose',actor,{patch:{proposal,open_question_id:null,proposals:[...(item.proposals??[]),compactProposal(proposal)]},reason,evidence,confidence:proposal.confidence,refs:proposal.resolution?.allocations?.map((row:any)=>row.invoice_id)??[]},h);
     if(item.kind==='cash_receipt'&&autonomyAllows(w,item,proposal))return done({work_item:item,proposal,outcome:'auto_approved',...autoApprove(w,item,h)});
     item.awaiting={role:'accountant',since:w.now,why:proposal.gaps.length?proposal.gaps:[`confidence ${Math.round(proposal.confidence*100)}% is below ${Math.round(w.seat.autonomy.min_confidence*100)}%`]};
     return done({work_item:item,proposal,outcome:'awaiting_approval',waiting_on:item.awaiting});
@@ -235,7 +250,7 @@ export function workAction(w:World,action:Action,actor:Actor,h:CashHooks):{handl
       const precedent=item.kind==='cash_receipt'?recordPrecedent(w,item,'approval',actor,{decision:'approve',reason,resolution:item.proposal.resolution},h):undefined;
       return done({work_item:item,precedent,...gatewayPost(w,item,h)});
     }
-    transition(w,item,'reject',actor,{patch:{decision:null,awaiting:null,last_rejection:{by:actor.id,reason,at:w.now,proposal_id:item.proposal.id}},reason},h);
+    transition(w,item,'reject',actor,{patch:{decision:null,awaiting:null,last_rejection:{by:actor.id,reason,at:w.now,proposal_id:item.proposal.id},rejected_proposals:[...(item.rejected_proposals??[]),{proposal_id:item.proposal.id,fingerprint:proposalFingerprint(item.proposal),by:actor.id,reason,at:w.now}]},reason},h);
     const precedent=recordPrecedent(w,item,'rejection',actor,{decision:'reject',reason},h);
     return done({work_item:item,precedent});
   }
@@ -308,14 +323,19 @@ export function workAction(w:World,action:Action,actor:Actor,h:CashHooks):{handl
     w.handoffs.push(handoff);h.emit('work.handoff_written',{handoff_id:handoff.id,run_id:handoff.run_id});return done({handoff});
   }
   if(type==='seat_configure'){
-    only(action,['enabled','auto_post','min_confidence','max_auto_minor','colleagues'],h);
+    only(action,['enabled','auto_post','min_confidence','max_auto_minor','colleagues','ablation'],h);
     if(!can(actor,'configure',{kind:'seat'}))h.fail('work_permission_denied','Only the controller configures the seat',403);
-    const before=clone(w.seat.autonomy),simulation=clone(w.seat.simulation);
+    const before=clone(w.seat.autonomy),simulation=clone(w.seat.simulation),ablationBefore=clone(w.seat.ablation??{});
     for(const key of ['enabled','auto_post'] as const)if(action[key]!==undefined){if(typeof action[key]!=='boolean')h.fail('invalid_seat_setting',`${key} must be boolean`);w.seat.autonomy[key]=action[key];}
     if(action.min_confidence!==undefined){if(typeof action.min_confidence!=='number'||action.min_confidence<0.5||action.min_confidence>1)h.fail('invalid_seat_setting','min_confidence must be from 0.5 to 1');w.seat.autonomy.min_confidence=action.min_confidence;}
     if(action.max_auto_minor!==undefined)w.seat.autonomy.max_auto_minor=h.integer(action.max_auto_minor,'max_auto_minor',0,1e11);
     if(action.colleagues!==undefined){if(typeof action.colleagues!=='boolean')h.fail('invalid_seat_setting','colleagues must be boolean');w.seat.simulation.colleagues=action.colleagues;}
-    log(w,{actor:actor.id,role:workRole(actor),action:'configure_seat',subject:w.seat.id,refs:[w.seat.id],reason:'Seat settings changed',diff:{...diff(before,w.seat.autonomy),...diff(simulation,w.seat.simulation)},evidence:[]},h);
+    if(action.ablation!==undefined){
+      const ablation=action.ablation;
+      if(!ablation||typeof ablation!=='object'||Array.isArray(ablation)||Object.keys(ablation).some(key=>!['trust_agent_confidence','skip_backtest'].includes(key))||Object.values(ablation).some(value=>typeof value!=='boolean'))h.fail('invalid_seat_setting','ablation accepts trust_agent_confidence and skip_backtest booleans');
+      w.seat.ablation={...(w.seat.ablation??{}),...ablation};
+    }
+    log(w,{actor:actor.id,role:workRole(actor),action:'configure_seat',subject:w.seat.id,refs:[w.seat.id],reason:'Seat settings changed',diff:{...diff(before,w.seat.autonomy),...diff(simulation,w.seat.simulation),...diff(ablationBefore,w.seat.ablation??{})},evidence:[]},h);
     return done({seat:w.seat});
   }
   if(type==='seat_onboarded'){

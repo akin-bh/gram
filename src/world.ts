@@ -39,13 +39,13 @@ import {manualJournalAction,manualJournalApprovalRejected,manualJournalCollectio
 import type {ManualJournalHooks} from './manual-journals.ts';
 import {erpIdentityRequirements,erpIdentityAction,syncErpIdentities} from './erp-identities.ts';
 import {supplierPaymentRequirements,supplierPaymentCollections,supplierPaymentFeeds,supplierPaymentAction,resolveSupplierPaymentRoute,validateSupplierPaymentBinding,supplierPaymentOperationRoute,holdSupplierPaymentRoute} from './supplier-payments.ts';
-import {CASH_KIND,cashApplicationAccounts,cashApplicationAction,cashApplicationRequirements,deliverBankFeed,normalizeCashApplication,seedCashApplication} from './cash-application.ts';
-import type {CashHooks} from './cash-application.ts';
+import {CASH_KIND,cashApplicationAccounts,cashApplicationAction,cashApplicationRequirements,deliverBankFeed,normalizeCashApplication,seedCashApplication,validatedCashControls} from './cash-application.ts';
+import type {CashHooks,CashControls} from './cash-application.ts';
 import {advanceWork,createWorkItem,normalizeWork,workAction,SYNC} from './work.ts';
 /** accountant and system actors exist only in the cash-application system of work. */
 export type Actor = { id: string; role: 'controller' | 'agent' | 'operator' | 'accountant' | 'system'; runId?: string };
 export type ExceptionControls = {creditNotePercent?:number;disputePercent?:number;disputeStatus?:'open'|'evidence_submitted'|'won'|'lost';returnedPaymentPercent?:number;periodClosed?:boolean};
-export type ScenarioInput = { kind?: string; name?: string; company?: string; description?: string; narrative?: string; currency?: string; seed?: string | number; orderCount?: number; initialCashMinor?: number; startingCashMinor?: number; approvalThresholdMinor?: number; cancelEvent?: boolean; initialFaults?: {system:string;mode:'offline'|'rate_limit'|'expired'}[]; limitations?: string[];exceptionControls?:ExceptionControls;procurementControls?:ProcurementControls;payrollControls?:PayrollControls;reconciliationControls?:ReconciliationControls;sourceContext?:SourceContext;treasuryControls?:TreasuryControls;blueprint?:Blueprint;foreignControls?:ForeignControls };
+export type ScenarioInput = { kind?: string; name?: string; company?: string; description?: string; narrative?: string; currency?: string; seed?: string | number; orderCount?: number; initialCashMinor?: number; startingCashMinor?: number; approvalThresholdMinor?: number; cancelEvent?: boolean; initialFaults?: {system:string;mode:'offline'|'rate_limit'|'expired'}[]; limitations?: string[];exceptionControls?:ExceptionControls;procurementControls?:ProcurementControls;payrollControls?:PayrollControls;reconciliationControls?:ReconciliationControls;sourceContext?:SourceContext;treasuryControls?:TreasuryControls;blueprint?:Blueprint;foreignControls?:ForeignControls;cashControls?:CashControls };
 export type Action = { type?: string; action?: string; [key: string]: any };
 export type DomainEvent = { type: string; [key: string]: any };
 export type World = {
@@ -218,7 +218,7 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   const kind = input.kind ?? 'ticket-cancellation';
   let blueprint:Blueprint|undefined;
   if(input.blueprint!==undefined){try{blueprint=validateBlueprint(input.blueprint);}catch(error){if(error instanceof BlueprintError)reject(error.code,error.message);throw error;}
-    if(['exceptionControls','procurementControls','payrollControls','reconciliationControls','treasuryControls','foreignControls'].some(key=>input[key as keyof ScenarioInput]!==undefined))reject('blueprint_preset_conflict','Blueprint source graphs cannot be combined with preset economic controls');
+    if(['exceptionControls','procurementControls','payrollControls','reconciliationControls','treasuryControls','foreignControls','cashControls'].some(key=>input[key as keyof ScenarioInput]!==undefined))reject('blueprint_preset_conflict','Blueprint source graphs cannot be combined with preset economic controls');
     if(input.initialCashMinor===undefined&&input.startingCashMinor===undefined)reject('blueprint_opening_capital_required','Blueprint worlds require explicit initialCashMinor or startingCashMinor, including zero');
     if(input.cancelEvent===true)reject('blueprint_preset_conflict','Preset ticket cancellation cannot be applied to a blueprint source graph');
     if(kind===CASH_KIND)reject('blueprint_preset_conflict','The cash-application company has its own imported history; it cannot be combined with a blueprint');
@@ -231,6 +231,8 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   if (!scenarioCatalog.some(s => s.kind === kind)) reject('unknown_scenario','Unknown scenario kind');
   if(input.foreignControls!==undefined&&kind!=='foreign-service-close')reject('invalid_scenario','foreignControls require foreign-service-close');
   if(input.treasuryControls!==undefined&&kind!=='treasury-fx')reject('invalid_scenario','treasuryControls require treasury-fx');
+  if(input.cashControls!==undefined&&kind!==CASH_KIND)reject('invalid_scenario','cashControls require the cash-application family');
+  const cashControls=kind===CASH_KIND?validatedCashControls(input.cashControls,reject):undefined;
   if(input.currency!==undefined&&input.currency!=='USD')reject('unsupported_currency','Only USD scenarios are implemented');
   if(input.cancelEvent!==undefined&&typeof input.cancelEvent!=='boolean')reject('invalid_scenario','cancelEvent must be boolean');
   if(input.exceptionControls!==undefined&&kind!=='settlement-exceptions')reject('invalid_scenario','exceptionControls require the settlement-exceptions family');
@@ -299,7 +301,7 @@ export function createWorld(input: ScenarioInput = {}, id = 'world-local'): Worl
   const seedHooks={perform:(action:Action,actor:Actor)=>applyAction(w,action,actor).result,document:(type:string,name:string,body:string,refs:any)=>evidenceDocument(w,type,name,body,refs),mail:(message:any)=>mail(w,message,[]),fail:reject};
   if(blueprint){try{materializeBlueprint(w,blueprint,{perform:(action:Action,actor:Actor)=>applyAction(w,action,actor)});}catch(error){if(error instanceof BlueprintError)reject(error.code,error.message);throw error;}w.sourceMode='blueprint';}
   else {
-  if(kind===CASH_KIND)seedCashApplication(w,count,random,cashHooks(w,[]));
+  if(kind===CASH_KIND)seedCashApplication(w,count,random,cashHooks(w,[]),cashControls);
   if(kind==='foreign-service-close')seedForeignServiceScenario(w,count,input.foreignControls,{...seedHooks,perform:(action:Action,actor:Actor)=>applyAction(w,action,actor)});
   if(kind==='payroll-federal')seedStatutoryPayrollScenario(w,count,seedHooks);
   if(kind==='fixed-asset-close')seedFixedAssetScenario(w,count,random,seedHooks);
@@ -943,7 +945,7 @@ export function summarize(w: World) {
     ...(w.foreignControls?{foreignControls:clone(w.foreignControls),foreignSources:clone(w.foreignSources)}:{}),
     ...(w.treasuryControls?{treasuryControls:clone(w.treasuryControls),treasurySources:clone(w.treasurySources)}:{}),
     ...(w.reconciliationControls?{reconciliationControls:clone(w.reconciliationControls)}:{}),
-    ...(w.seat?{seat:{title:w.seat.title,one_line:w.seat.one_line,autonomy:clone(w.seat.autonomy),onboarding:clone(w.seat.onboarding)},
+    ...(w.seat?{seat:{title:w.seat.title,one_line:w.seat.one_line,autonomy:clone(w.seat.autonomy),ablation:clone(w.seat.ablation??{trust_agent_confidence:false,skip_backtest:false}),onboarding:clone(w.seat.onboarding),history_imported:(w.cashHistory?.receipts?.length??0)>0,judge_cases:(w.cashCaseKey??[]).filter((row:any)=>row.set==='judge').length},
       work:Object.fromEntries(['new','proposed','needs_info','answered','rejected','approved','posted','escalated','scheduled','closed'].map(state=>[state,w.workItems.filter((item:any)=>item.state===state).length])),
       unapplied_cash_minor:0-lookup(w.accounts,'unapplied-cash','Account').balance_minor,bank_feed_pending:w.bankFeed.filter((row:any)=>!row.delivered_at).length,
       policies_active:w.policies.filter((row:any)=>row.status==='active').length,policies_proposed:w.policies.filter((row:any)=>row.status==='proposed').length,open_questions:w.questions.filter((row:any)=>row.status==='open').length}:{}),

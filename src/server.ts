@@ -16,7 +16,7 @@ import { MAIL_LIMITS } from './mail.ts';
 import {buildAgentContextOverview,buildAgentProviderContext} from './agent-context.ts';
 import {runSeat} from './seat.ts';
 import type {SeatMode} from './seat.ts';
-import {agentQueue,agentWorkActions,controllerWorkActions,humanWorkActions,precedentSearch,whyTimeline,workBriefing,workItemView,GATEWAY} from './work.ts';
+import {agentQueue,agentWorkActions,controllerWorkActions,humanWorkActions,precedentSearch,whyTimeline,workBriefing,workItemView,GATEWAY,DISPATCHER} from './work.ts';
 import {queryHistory,HistoryQueryError} from './history-sql.ts';
 import {scoreCashApplication} from './cash-score.ts';
 import {SlackBridge,loadSlackConfig} from './slack.ts';
@@ -134,7 +134,7 @@ export async function createService(options: ServiceOptions = {}) {
   /** Every write to the system of work goes through here: the role check, one atomic
    * commit with its audit events, and an audit record for attempts that were denied. */
   function workCommand(worldId:string,input:any,actor:Actor,key:string,requestId:string){
-    const type=String(input?.type??''),allowed=actor.role==='agent'?agentWorkActions:actor.role==='controller'?[...humanWorkActions,...controllerWorkActions,'work_retry_posting']:actor.role==='accountant'?humanWorkActions:actor.role==='system'?['work_retry_posting','seat_onboarded']:[];
+    const type=String(input?.type??''),allowed=actor.role==='agent'?agentWorkActions:actor.role==='controller'?[...humanWorkActions,...controllerWorkActions,'work_retry_posting']:actor.role==='accountant'?humanWorkActions:actor.role==='system'?['work_retry_posting','seat_onboarded','work_escalate']:[];
     try{
       if(!allowed.includes(type))throw new ServiceError(403,'work_action_denied',`${actor.role} may not perform ${type||'an unnamed action'}`);
       return store.once(worldId,actor.id,key,input,()=>{
@@ -156,7 +156,7 @@ export async function createService(options: ServiceOptions = {}) {
     if (store.all('runs').some(r => r.world === id && r.status === 'running')) throw new ServiceError(409, 'agent_already_running');
     const world=store.world(id),runId = crypto.randomUUID(), token = secret(), tokenHash = hash(token), startedAt = new Date().toISOString();
     const instruction=spec.kind==='instruction'?spec.instruction:`${spec.mode==='onboarding'?'Onboarding':'Shift'} · ${spec.reason}`;
-    const run:any = { id: runId, world: id, status: 'running', instruction, model: config().model, started_at: startedAt, output: '', progress: compactRunProgress({ type: 'agent.started' }, startedAt), ...(spec.kind==='seat'?{seat:{mode:spec.mode,items:spec.items,trigger:spec.trigger,item_versions:Object.fromEntries(spec.items.map(item=>[item,world.workItems?.find((row:any)=>row.id===item)?.updated_at??null]))}}:{}) };
+    const run:any = { id: runId, world: id, status: 'running', instruction, model: spec.kind==='seat'?config().seatModel:config().model, started_at: startedAt, output: '', progress: compactRunProgress({ type: 'agent.started' }, startedAt), ...(spec.kind==='seat'?{seat:{mode:spec.mode,items:spec.items,trigger:spec.trigger,item_versions:Object.fromEntries(spec.items.map(item=>[item,world.workItems?.find((row:any)=>row.id===item)?.updated_at??null]))}}:{}) };
     store.put('agent-tokens', tokenHash, { world: id, actor: `agent-world:${id}`, runId, expires_at: Date.now() + 900_000 });
     store.put('runs', runId, run); store.audit(id, 'agent.started', { run_id: runId, instruction, model: run.model, ...(run.seat?{seat:run.seat,started_by:spec.actor}:{}) }, spec.actor, spec.requestId);
     const abort = new AbortController(),onEvent=(e:Record<string,unknown>) => {
@@ -186,7 +186,13 @@ export async function createService(options: ServiceOptions = {}) {
       const previous=state.attempts.get(itemId);
       if(agentQueue(world).some((row:any)=>row.id===itemId)&&(!previous||previous.updated===item.updated_at))state.attempts.set(itemId,{count:(previous?.count??0)+1,updated:item.updated_at});
       else state.attempts.delete(itemId);
-      if((state.attempts.get(itemId)?.count??0)===2)store.audit(id,'seat.item_stalled',{work_item_id:itemId,run_id:runId},'dispatcher');
+      if((state.attempts.get(itemId)?.count??0)===2){
+        store.audit(id,'seat.item_stalled',{work_item_id:itemId,run_id:runId},'dispatcher');
+        // Two idle runs mean the seat cannot move this item. Hand it to a person rather than loop; the
+        // dispatcher role may escalate and nothing else, and the escalation is a logged transition.
+        try{workCommand(id,{type:'work_escalate',work_item_id:itemId,to_role:'accountant',reason:`The seat left ${itemId} untouched in two runs (last ${runId}). A person needs to decide it.`},DISPATCHER as any,`stall:${itemId}:${item.updated_at}`,crypto.randomUUID());state.attempts.delete(itemId);}
+        catch(error){store.audit(id,'seat.escalation_failed',{work_item_id:itemId,error:String(error)},'dispatcher');}
+      }
     }
     if(completed&&spec.mode==='onboarding'&&world.seat?.onboarding?.status==='pending'&&world.policies?.length){
       try{workCommand(id,{type:'seat_onboarded',run_id:runId},GATEWAY as any,`onboarded:${runId}`,crypto.randomUUID());}catch(error){store.audit(id,'seat.onboarding_record_failed',{run_id:runId,error:String(error)},'dispatcher');}
@@ -197,7 +203,7 @@ export async function createService(options: ServiceOptions = {}) {
     const world=store.world(id);if(!world.seat)return undefined;
     const connections=oauth.connections(id),missing=SEAT_SYSTEMS.filter(system=>connections.find((row:any)=>row.system===system)?.status!=='connected'),state=stateFor(id);
     const running=store.all('runs').find((row:any)=>row.world===id&&row.status==='running');
-    return {on_duty:Boolean(world.seat.autonomy.enabled),agent_available:Boolean(options.seatRunner)||config().available,missing_connections:missing,running_run:running?.id??null,stalled_items:stalled(id),retry_at:state.retryAt>Date.now()?new Date(state.retryAt).toISOString():null,runs_last_hour:state.starts.filter(at=>at>Date.now()-3_600_000).length,max_runs_per_hour:options.maxSeatRunsPerHour??12};
+    return {on_duty:Boolean(world.seat.autonomy.enabled),agent_available:Boolean(options.seatRunner)||config().available,model:config().seatModel,effort:config().seatEffort,missing_connections:missing,running_run:running?.id??null,stalled_items:stalled(id),retry_at:state.retryAt>Date.now()?new Date(state.retryAt).toISOString():null,runs_last_hour:state.starts.filter(at=>at>Date.now()-3_600_000).length,max_runs_per_hour:options.maxSeatRunsPerHour??12};
   }
   /** Work starts itself: a new bank line, an answer or a rejection puts an item in the
    * seat's queue, and the dispatcher launches a run for it without anyone asking. */

@@ -34,22 +34,26 @@ Limits are enforced in code, not by the prompt:
 - **Hard checks on every resolution.** Nothing applies more cash than arrived, closes more than an invoice owes, nets kegs that never came back, touches an invoice that is already paid, or leaves cash unapplied without saying so.
 - **Denied attempts are audited** as `work.denied` in the hash-chained log.
 - **Connections gate the seat.** Revoke the bank connection and the seat can neither read nor be launched.
+- **A no is final for that move.** A proposal that does exactly what a rejected one did is refused by the gateway as `repeat_proposal`, however it is worded, with the person's reason in the refusal. The seat must change it, ask, or escalate. Every proposal an item ever received stays on the item.
+- **Stalled work goes to a person.** An item the seat leaves untouched in two runs is escalated by a `dispatcher` role that can do nothing else, so a queue cannot loop quietly.
+- **Bounds are measured against evidence.** A rule with a monetary bound (fee write-offs, deduction caps) carries its backtest's largest supporting case and the headroom above it. The controller sees "bound $50.00 vs largest supporting case $45.00 (+11.1%)" before deciding, and the simulated controller refuses anything more than 10% wide.
 
-The seat is a [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) run ([`src/seat.ts`](src/seat.ts)). Its prompt is about 600 words describing the job and its boundaries, and its tools are CRUD on the work: `get_briefing`, `get_work_item`, `search_precedents`, `query_history`, `read_attachment`, `propose_resolution`, `ask_question`, `escalate`, `propose_policy`, `write_handoff`. The thirteen older scenario families keep the general-purpose agent described below.
+The seat is a [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) run ([`src/seat.ts`](src/seat.ts)). Its prompt is about 600 words describing the job and its boundaries, and its tools are CRUD on the work: `get_briefing`, `get_work_item`, `search_precedents`, `query_history`, `read_attachment`, `propose_resolution`, `ask_question`, `escalate`, `propose_policy`, `write_handoff`. It runs on `claude-opus-5-5` at `high` effort by default, with `claude-sonnet-5-5` as the fallback model if Opus is unavailable; `FINANCE_WORLD_SEAT_MODEL`, `FINANCE_WORLD_SEAT_EFFORT` and `FINANCE_WORLD_SEAT_FALLBACK_MODEL` change that, and the Work view shows which model is on duty. The thirteen older scenario families keep the general-purpose agent described below.
 
 ### Proof it works
 
 The benchmark is a planted month of 14 bank lines with an answer key ([`PLANTED`](src/cash-application.ts)). Dana (AR lead) and the controller are simulated colleagues. They decide from the answer key, and Gemini Argon phrases their replies ([`src/colleague.ts`](src/colleague.ts)). Precision of automation is the share of applications posted without a person that match the answer key.
 
-| | Scripted baseline | Claude seat, run 1 | Claude seat, run 2 |
-|---|---|---|---|
-| Precision of automation | 100% (4/4) | 100% (8/8) | 100% (7/7) |
-| Posted without a person | 29% | 57% | 50% |
-| Posted correctly in the end | 14/14 | 14/14 | 14/14 |
-| Deferred to a person when unsure | 4/4 | 4/4 (asked first 1/4) | 4/4 (asked first 3/4) |
-| Human touches | 19 | 9 | 11 |
-| Policies in force at the end | 3 (fixed list) | 7: six from history, one from Dana's answer | 12: eleven from history, one from Dana's answer |
-| Model cost for the month | $0 | $0.63 | $0.76 |
+| | Scripted baseline | Claude seat, run 1 (Sonnet 5.5) | Claude seat, run 2 (Sonnet 5.5) | Claude seat, Opus 5.5 at high effort |
+|---|---|---|---|---|
+| Precision of automation | 100% (4/4) | 100% (8/8) | 100% (7/7) | 100% (7/7) |
+| Posted without a person | 29% | 57% | 50% | 50% |
+| Posted correctly in the end | 14/14 | 14/14 | 14/14 | 14/14 |
+| Deferred to a person when unsure | 4/4 | 4/4 (asked first 1/4) | 4/4 (asked first 3/4) | 4/4 (asked first 4/4) |
+| Proposals the answer key forbids | 0 | not scored | not scored | 0 |
+| Human touches | 19 | 9 | 11 | 10 |
+| Policies in force at the end | 3 (fixed list) | 7: six from history, one from Dana's answer | 12: eleven from history, one from Dana's answer | 7: six from history, one from Dana's answer |
+| Model cost for the month | $0 | $0.63 | $0.76 | $1.72 |
 
 Run 1 shows the three properties the track asks for:
 
@@ -59,7 +63,18 @@ Run 1 shows the three properties the track asks for:
 
 Run 2 ran after one sentence was added to the prompt ("when a person could simply tell you the missing fact, ask them"). It asked first in three of the four unclear cases. Its onboarding learned a different policy set: it did not learn the Brightwater alias, so it asked Dana about that payment and proposed an alias for one bar. The backtest showed 0 supporting and 33 contrary cases, and the controller rejected it. That payment was posted by a person, which is why fewer lines posted without one. Live runs vary, and both are kept as recorded.
 
+The Opus 5.5 run is the first on the seat's current default model, after the gateway began refusing repeat proposals, escalating stalled items and reporting bound headroom. It asked first in all four unclear cases and proposed no move the answer key forbids. Its onboarding proposed six policies and none of the redundant payer aliases Sonnet's run 2 produced, and it set every bound exactly at the evidence: the wire-fee rule at $45 against a largest supporting case of $45, the PROMO-Q4 cap at 1.85% against the one approved case. That exactness cost recall. The second PROMO-Q4 remittance arrived before the policy was active, and the third deducted 1.86%, one basis point over the cap, so the seat flagged it for a person rather than widen the rule. Both posted correctly by a person, and the score lists them under `missed_auto`. Growing recall from there is a controller decision (approve a 2% cap, the actual agreement), which is where the brief says it belongs.
+
 Reproduce the results with `bun run bench:baseline` (no model calls) and `bun run bench:cash` (live: calls Anthropic, and Vertex AI when Argon is configured). The reports are in [`evidence/`](evidence/readme.md).
+
+The answer key is open to the judge. `record_case_expectation` attaches an expected outcome, forbidden moves, an auto-post allowance and what the AR lead knows to any bank line the controller records. The seat works the line unseen, the simulated colleague answers from the judge's truth, and the score reports those lines as a separate `judge` set. That is the brief's "we may ask you to try a scenario of our own", scored. Run once live (see the evidence list below): on an unseen $50-short wire the seat checked the history for comparable gaps, found the $50 fell in a range the company had never handled, chose a short-pay notice over a write-off, stated 0.85 confidence, and waited for a person.
+
+The score also counts what must not happen. Three answer-key cases carry `forbid` lists, the machine-readable half of what the responsible person knows: the late discount must not be booked as a discount or a fee, the unexplained short-pay must not be written off, and the duplicate payment must not be applied to the customer's other open invoice. Every proposal an item received is checked against them, so a forbidden move is counted even when a person caught it. The summary reports `forbidden_proposals`, `should_not_auto_posted` (a line that needed a person but posted under policy) and `missed_auto` (a line that should have posted alone but needed a person), overall and per case set.
+
+Two things a finance team needs are consistency and knowing which parts of the harness do the work:
+
+- `bun run bench:cash --trials=5` repeats the month and writes a `-trials.json` summary with pass^k: whether precision held at 100%, nothing posted without a person that should not have, and no forbidden move was proposed, on every trial rather than the best one.
+- `bun run bench:cash --ablate=trust-agent | no-backtest | no-history` removes one component at a time, the method Anthropic describes for finding which harness parts are load-bearing: trust the agent's stated confidence instead of the gateway's evidence check, approve every policy without reading the backtest, or import no history to learn from. Ablations are switched on through `seat_configure` for the benchmark company only and are visible in its summary.
 
 ### Try it
 
@@ -67,7 +82,7 @@ Reproduce the results with `bun run bench:baseline` (no model calls) and `bun ru
 2. In **Work**, connect the bank, NetSuite and Gmail (three consent screens), then switch **On duty**. The seat onboards first: it queries the history and proposes policies. Approve or reject them under **Policies**; a rejection needs a reason.
 3. Under **Bank feed**, choose **Advance to the next sync**. Four lines arrive and the seat starts by itself. Anything covered by policy posts.
 4. At the next sync, Summit's late discount and Pine & Post's short-pay wait under **Needs you**. Reject one with a reason and watch the seat revise it.
-5. Under **Bank feed → Record a bank line**, enter your own case, such as a $60-short wire from Harborview, and see what the seat does with it.
+5. Under **Bank feed → Record a bank line**, enter your own case, such as a $60-short wire from Harborview, and see what the seat does with it. Open **Answer key (optional)** to say what the right outcome is, which moves the seat must never propose, whether the line may post alone, and what the AR lead knows. The seat never sees the key; with simulated colleagues on, Dana answers from it. **Score now** then reports your lines as judge scenarios, separately from the planted month.
 6. Under **Why?**, enter `INV-2003` to see the sync, the proposal, the policy approval with its confidence, and the posting.
 7. **Autonomy and people → Simulated colleagues** lets the month run unattended.
 
@@ -155,7 +170,8 @@ The shell adapts the neutral surfaces, compact sidebar, tabs, split panes, searc
 | `ANTHROPIC_API_KEY` | Enables live agent runs and scenario generation. The process environment takes precedence. |
 | Project `.env` | If the environment key is absent, the loader reads `.env` in the repository root; [`.env.example`](.env.example) lists the keys. It reads the key without exposing it to the console. [`bunfig.toml`](bunfig.toml) turns off Bun's automatic `.env` loading, so keys never enter `process.env` for the service or the test suite. |
 | `FINANCE_WORLD_ENV_FILE` | Overrides the key-file location. |
-| `FINANCE_WORLD_MODEL` | Overrides the default model, `claude-sonnet-5-5`. |
+| `FINANCE_WORLD_MODEL` | Overrides the default model for the general-purpose agent and scenario generation, `claude-sonnet-5-5`. |
+| `FINANCE_WORLD_SEAT_MODEL`, `FINANCE_WORLD_SEAT_EFFORT`, `FINANCE_WORLD_SEAT_FALLBACK_MODEL` | The cash-application seat's model (`claude-opus-5-5`), its effort level (`high`; `low`, `medium`, `xhigh` or `max` are accepted) and the model the SDK falls back to if the primary is unavailable (`claude-sonnet-5-5`). Each run records the models that actually answered. |
 | `GEMINI_API_KEY`, `GOOGLE_CLOUD_PROJECT` | Enable the default world generator, `gemini-4-argon` on Vertex AI (`global`). The process environment takes precedence over the key file. Without both, generation uses Claude. |
 | `FINANCE_WORLD_ARGON_PRICING` | Optional JSON with verified `inputUsdPerMillion`, `cachedInputUsdPerMillion`, `outputUsdPerMillion`, and `source`. Without it, Argon token usage is recorded and its dollar cost is reported as unknown. Invalid pricing disables Argon. |
 | `FINANCE_WORLD_PORT` | Defaults to `24300`. |
@@ -398,13 +414,15 @@ Each world's ordered records form a SHA-256 hash chain. Verification detects mod
 
 ## Validation and captured evidence
 
-Run `bun run check`, `bun test`, and `bun run build` for the current source. The current source passes the type check and **722 tests across 94 files**. The cash-application suites (`src/work.test.ts`, `src/slack.test.ts`, `src/colleague.test.ts`, `test/seat-http.test.ts`) cover:
+Run `bun run check`, `bun test`, and `bun run build` for the current source. The current source passes the type check and **727 tests across 94 files**. The cash-application suites (`src/work.test.ts`, `src/slack.test.ts`, `src/colleague.test.ts`, `test/seat-http.test.ts`) cover:
 
-- **Learning.** History parsing and backtest boundaries.
-- **Limits.** Role limits and hard checks.
+- **Learning.** History parsing, backtest boundaries, and the bound headroom a rule carries against its largest supporting case; a company that starts with no history.
+- **Limits.** Role limits and hard checks; a rejected proposal cannot be resubmitted under new words, and the refusal carries the person's reason.
 - **Posting.** Auto-posting only under policy, outages that delay posting without losing the approval, and follow-ups closing when paid.
-- **People.** Questions, answers, rejections and policy release.
-- **Autonomy.** The loop over real HTTP from bank line to dispatcher to seat to gateway, connection gating, stalled items, and audited denials.
+- **People.** Questions, answers, rejections and policy release; the simulated controller refusing a bound wider than its evidence.
+- **Autonomy.** The loop over real HTTP from bank line to dispatcher to seat to gateway, connection gating, stalled items escalated to a person by the dispatcher role, and audited denials.
+- **Scoring.** Forbidden moves counted from every proposal, should-not-auto-post and missed-auto fields, and the trust-agent ablation producing the false auto-post it is meant to expose.
+- **Judge scenarios.** A controller-recorded line with an answer key is scored as the `judge` set; the key never reaches the seat's briefing or item view; the simulated AR lead answers from the judge's truth; the agent cannot record a key.
 - **Slack.** Cards, modals, thread answers, stale-card and unmapped-user refusals.
 
 The earlier suite checks deterministic generation, balanced journals, partial settlement, duplicate/uncertain retries, cumulative approval limits, verified beneficiaries, insufficient cash, connection faults, deferred posting, API pagination and provider shapes, OAuth replay/scope/refresh/revocation boundaries, persistence, hostile origins, audit tampering, and agent capability/secret boundaries. Procurement tests cover independent authority, matching exceptions, received/billed quantities, duplicate invoice delivery, FIFO stock, original-cost returns, deferred journals and restart. The session regression checks concurrent local instances. Later suites cover federal payroll tax, foreign obligations and treasury, fixed assets, manual journals and each native ERP subset, supplier payment routes, blueprints, ticketing and processor funding, and agent context paging. These tests run locally without paid model calls. They do not establish vendor certification or general autonomous-finance reliability.
@@ -438,11 +456,13 @@ Argon's dollar cost is unknown without verified pricing, so no combined totals a
 
 The native attachment file-picker check remains unverified: rep returned `unsupported_text_control` before selecting a file. MIME upload API tests, the scoped text reader, original-byte retrieval, and mailbox attachment rendering passed; those checks do not establish native picker behavior.
 
-The cash-application seat's planted month is recorded three times, with scores from [`src/cash-score.ts`](src/cash-score.ts):
+The cash-application seat's planted month is recorded four times, and a judge scenario once, with scores from [`src/cash-score.ts`](src/cash-score.ts):
 
-- [`cash-bench-scripted-baseline-seed42.json`](evidence/cash-bench-scripted-baseline-seed42.json.gz): a scripted seat with three fixed rules and no model. 4 of 14 lines posted without a person, all correct; 19 human touches.
+- [`cash-bench-scripted-baseline-seed42.json`](evidence/cash-bench-scripted-baseline-seed42.json.gz): a scripted seat with three fixed rules (bounded at the $45 the records support) and no model. 4 of 14 lines posted without a person, all correct; 19 human touches. Regenerated after the should-not-act fields were added; the numbers did not change.
 - [`cash-bench-live-seed42-run1.json`](evidence/cash-bench-live-seed42-run1.json.gz): a live `claude-sonnet-5-5` seat over 10 runs. It learned six policies from history and one from Dana's answer. 8 of 14 lines posted without a person, all correct; 14 of 14 correct in the end; 9 human touches; $0.63. Eight colleague replies were phrased by Gemini Argon.
 - [`cash-bench-live-seed42-run2.json`](evidence/cash-bench-live-seed42-run2.json.gz): the same month after the one-sentence prompt change, over 11 runs. 7 of 14 lines posted without a person, all correct; asked first in 3 of 4 unclear cases; 11 human touches; $0.76. Eleven replies were phrased by Argon.
+- [`cash-bench-live-seed42-opus-run1.json`](evidence/cash-bench-live-seed42-opus-run1.json.gz): a live `claude-opus-5-5` seat at `high` effort over 10 runs, with the repeat-proposal guard, dispatcher escalation and bound headroom in place. 7 of 14 lines posted without a person, all correct; 14 of 14 correct in the end; asked first in 4 of 4 unclear cases; 0 forbidden proposals, 0 lines posted without a person that needed one, 0 repeat proposals refused, 0 dispatcher escalations; 10 human touches; $1.72. Only Opus answered (no fallback). Eight replies were phrased by Argon.
+- [`cash-bench-live-seed42-judge-scenario.json`](evidence/cash-bench-live-seed42-judge-scenario.json.gz): the judge path, live on `claude-opus-5-5`. After onboarding and the first sync (4 of 4 posted under policy), a bank line the seat had never seen was recorded with its answer key through `record_case_expectation`: a Harborview wire $50 short of INV-2004, forbidding a bank-fee write-off, with the AR lead's truth that the $50 is chased. The seat read the item, queried history, found four past Harborview gaps of $85 to $120 that were chased and paid, found no case between $45 and $85, called the $50 "new ground", proposed apply-and-chase with confidence 0.85, and waited for a person. It proposed no write-off and no wider fee rule. The simulated AR lead approved from the key; the judge set scored 1 of 1 correct, 0 forbidden proposals, 0 posted without a person; $0.60 for three runs.
 
 The simulated colleagues decide from the answer key, so these runs measure the seat's own judgment, not how real people would respond. Run 1's report predates the "deferred" and "asked first" fields; its per-case records show all four unclear cases went to a person, and it asked first in one.
 
@@ -460,6 +480,9 @@ State and local payroll tax, supplemental wages, pretax deductions, the FUTA cre
 - **Simulated colleagues** decide from the answer key and are marked `sim:` everywhere they act. They are for practice and the benchmark, not a substitute for people. Argon only phrases their replies.
 - **Policy kinds** are a fixed set the gateway can check: exact match, multi-invoice split, payer alias, wire fee write-off, early-payment discount, keg-deposit netting and deduction codes. The seat cannot invent a new kind; anything else waits for a person.
 - **Confidence** is a product of evidence factors, not a calibrated probability. It decides only whether a person must look; the hard checks decide what is possible at all.
+- **Bound headroom** is reported for the two rule kinds with a monetary bound (fee write-offs and deduction caps). The real controller decides; only the simulated controller applies the 10% limit.
+- **Ablations** (`trust_agent_confidence`, `skip_backtest`, `cashControls.history:false`) exist to measure the harness in the benchmark. They are controller settings on one company, logged like any other change, and nothing in the console turns them on.
+- **The planted month has been run to saturation**, so its scores show precision and consistency, not generalization. The held-out test is a judge's own bank line with an answer key attached (`record_case_expectation`, or the **Answer key** form); those lines are scored as the `judge` set and never enter the seat's context. `bun run bench:cash --judge-case=cases.json` runs one, or a whole set, from a file.
 - **Refunds.** Customer refunds of held cash are not implemented. Duplicate or unplaced cash stays on account until a person resolves it outside gram.
 - **Slack** needs tokens from your own workspace. The integration is tested against a recorded Slack transport, not against Slack itself, and should run as one instance per app.
 
