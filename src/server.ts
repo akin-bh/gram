@@ -429,7 +429,7 @@ export async function createService(options: ServiceOptions = {}) {
           requireController(actor); const input = await body(request); actor = currentActor(request, actor); requireController(actor);
           if (!slack) throw new ServiceError(503, 'slack_unavailable', slackSetup.reason ?? 'Slack is not configured.');
           if (typeof input.enabled !== 'boolean') throw new ServiceError(400, 'invalid_slack_binding');
-          const binding = slack.bind(id, input.enabled); store.audit(id, 'slack.binding_changed', binding, actor.id, requestId);
+          const binding = slack.bind(id, input.enabled, typeof input.channel === 'string' ? input.channel : undefined); store.audit(id, 'slack.binding_changed', binding, actor.id, requestId);
           if (input.enabled) void slack.reconcile(id);
           return json({ binding, status: slack.status() });
         }

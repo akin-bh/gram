@@ -215,9 +215,9 @@ export class SlackBridge{
     const id=typeof card.world==='string'?card.world:undefined;
     return id&&this.deps.store.get('slack-bindings',id)?.enabled?id:undefined;
   }
-  /** Binding a company posts only what is waiting from now on, not its whole past. */
-  bind(worldId:string,enabled:boolean){
-    const binding={world:worldId,enabled,channel:this.deps.config.channel,changed_at:new Date().toISOString()};
+  /** Binding a company posts only what is waiting from now on, not its whole past. Each company can have its own channel. */
+  bind(worldId:string,enabled:boolean,channel?:string){
+    const binding={world:worldId,enabled,channel:channel&&/^[CG][A-Z0-9]{2,}$/.test(channel)?channel:this.deps.config.channel,changed_at:new Date().toISOString()};
     this.deps.store.put('slack-bindings',worldId,binding);
     if(enabled)for(const card of this.cards(worldId)){const id=`${worldId}:${card.key}`;if(card.final&&!this.deps.store.get('slack-cards',id))this.deps.store.put('slack-cards',id,{world:worldId,key:card.key,kind:card.kind,suppressed:true,digest:new Bun.CryptoHasher('sha256').update(JSON.stringify(card.blocks)).digest('hex'),final:true});}
     return binding;
