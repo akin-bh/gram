@@ -54,14 +54,14 @@ The shell adapts the neutral surfaces, compact sidebar, tabs, split panes, searc
 
 [`web/app.js`](web/app.js) imports native `Folder`, `TextControl`, `SelectControl`, `ButtonGroup`, `Slider`, and `Toggle` components from `dialkit/vanilla` with DialKit's stylesheet. These controls serve the workbench, record inspection, financial forms, procurement, feedback, and OAuth consent; saved fields are read-only. [`web/style.css`](web/style.css) supplies the shell geometry, neutral theme, component styling, and responsive behavior. Secondary context and technical details stay in folded groups or record tabs.
 
-[`src/build-ui.ts`](src/build-ui.ts) bundles the package and application through `Bun.build` into ignored `web/dist/` assets. The service serves that bundle for both the main console and connection consent. No Node process is needed to build, test, or run gram; `node:` compatibility imports execute under Bun. The Agent SDK is configured with `executable: 'bun'`; the installed SDK also ships its platform-native Claude CLI.
+[`src/build-ui.ts`](src/build-ui.ts) bundles the package and application through `Bun.build` into ignored `web/dist/` assets. The service serves that bundle for both the main console and connection consent. Bun runs everything: `Bun.serve` and `Bun.file` for HTTP and static files, `bun:sqlite` for state, `Bun.CryptoHasher` and Web Crypto for hashes, HMAC signatures and identifiers, `Bun.build` for the UI, and `bun:test` with `expect` for the suite. `node:fs`, `node:path`, and `node:os` remain only for directories, permissions, temporary folders, and the synchronous key-file read, which have no Bun-native equivalent. The Agent SDK is configured with `executable: 'bun'`; the installed SDK also ships its platform-native Claude CLI.
 
 ### Configuration
 
 | Setting | Behavior |
 |---|---|
 | `ANTHROPIC_API_KEY` | Enables live agent runs and scenario generation. The process environment takes precedence. |
-| Project `.env` | If the environment key is absent, the loader reads `.env` in the repository root; [`.env.example`](.env.example) lists the keys. It reads the key without exposing it to the console. |
+| Project `.env` | If the environment key is absent, the loader reads `.env` in the repository root; [`.env.example`](.env.example) lists the keys. It reads the key without exposing it to the console. [`bunfig.toml`](bunfig.toml) turns off Bun's automatic `.env` loading, so keys never enter `process.env` for the service or the test suite. |
 | `FINANCE_WORLD_ENV_FILE` | Overrides the key-file location. |
 | `FINANCE_WORLD_MODEL` | Overrides the default model, `claude-sonnet-5-5`. |
 | `GEMINI_API_KEY`, `GOOGLE_CLOUD_PROJECT` | Enable the default world generator, `gemini-4-argon` on Vertex AI (`global`). The process environment takes precedence over the key file. Without both, generation uses Claude. |

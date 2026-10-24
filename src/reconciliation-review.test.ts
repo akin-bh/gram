@@ -1,5 +1,4 @@
-import {test} from 'bun:test';
-import assert from 'node:assert/strict';
+import {test,expect} from 'bun:test';
 import {applyAction,createWorld,DomainError} from './world.ts';
 import type {Action,Actor,World} from './world.ts';
 
@@ -10,8 +9,8 @@ let sequence=0;
 const reference=(prefix:string)=>`${prefix}-${++sequence}`;
 function rejects(w:World,input:Action,actor:Actor=operator,code?:string){
   const before=structuredClone(w);
-  assert.throws(()=>act(w,input,actor),(error:any)=>error instanceof DomainError&&(!code||error.code===code));
-  assert.deepEqual(w,before,'Rejected reconciliation actions must be atomic');
+  expect(()=>act(w,input,actor)).toThrowSatisfying((error:any)=>error instanceof DomainError&&(!code||error.code===code));
+  expect(w,'Rejected reconciliation actions must be atomic').toStrictEqual(before);
 }
 const economics=(w:World)=>structuredClone({bank:w.bankTransactions,accounts:w.accounts,journals:w.journals,operations:w.operations,invoices:w.invoices,bills:w.bills});
 const bankBalanceAt=(w:World,at:string)=>w.bankTransactions.filter(row=>row.account_id==='cash-bank'&&row.status==='posted'&&row.posted_at<=at).reduce((sum,row)=>sum+row.amount_minor,0);
@@ -43,8 +42,8 @@ test('source-backed same-sign grouped matching and closure never change cash or 
   const {w,start,end,rows}=fixture(),incoming=rows.filter(row=>row.amount_minor>0),outgoing=rows.find(row=>row.amount_minor<0),before=economics(w);
   const statement=record(w,statementInput(w,start,end,{lines:[{source_line_id:'incoming-batch',posted_at:end,amount_minor:10_000,source_refs:[incoming[0].source_id,incoming[1].receipt_id]},{source_line_id:'outgoing',posted_at:end,amount_minor:-1000,source_refs:[outgoing.id]}]}));
   match(w,statement,statement.lines[0],incoming.map(row=>row.id));match(w,statement,statement.lines[1],[outgoing.id]);
-  const report=prepare(w,statement);assert.equal(report.can_close,true);assert.equal(report.bank_opening_minor,250_000);assert.equal(report.bank_closing_minor,259_000);assert.equal(report.book_closing_minor,259_000);assert.equal(report.adjusted_difference_minor,0);
-  act(w,closeInput(statement,report));assert.deepEqual(economics(w),before);
+  const report=prepare(w,statement);expect(report.can_close).toBe(true);expect(report.bank_opening_minor).toBe(250_000);expect(report.bank_closing_minor).toBe(259_000);expect(report.book_closing_minor).toBe(259_000);expect(report.adjusted_difference_minor).toBe(0);
+  act(w,closeInput(statement,report));expect(economics(w)).toStrictEqual(before);
 });
 
 test('equal amounts cannot substitute another source reference and match cannot use mixed-sign offsets',()=>{
@@ -66,8 +65,8 @@ test('timestamp parsing is strict and the statement window excludes start but in
   rejects(w,statementInput(w,end,start),controller);
   const atStart=statementInput(w,start,end);atStart.lines[0].posted_at=start;rejects(w,atStart,controller);
   const statement=record(w,statementInput(w,start,end));matchAll(w,statement);
-  const report=prepare(w,statement);assert.equal(report.can_close,true);assert.equal(report.bank_opening_minor,250_000);assert.equal(report.bank_closing_minor,250_000+rows.reduce((sum,row)=>sum+row.amount_minor,0));
-  assert.equal(report.unmatched_bank_transaction_ids.includes('bank-opening'),false);
+  const report=prepare(w,statement);expect(report.can_close).toBe(true);expect(report.bank_opening_minor).toBe(250_000);expect(report.bank_closing_minor).toBe(250_000+rows.reduce((sum,row)=>sum+row.amount_minor,0));
+  expect(report.unmatched_bank_transaction_ids.includes('bank-opening')).toBe(false);
 });
 
 test('statement arithmetic and actual bank-window balances must both agree',()=>{
@@ -75,14 +74,14 @@ test('statement arithmetic and actual bank-window balances must both agree',()=>
   rejects(w,statementInput(w,start,end,{closing_balance_minor:259_001}),controller);
   const falseBalance=record(w,statementInput(w,start,end,{opening_balance_minor:250_001,closing_balance_minor:259_001}));
   matchAll(w,falseBalance);const report=prepare(w,falseBalance);
-  assert.equal(report.bank_opening_minor,250_000);assert.equal(report.bank_closing_minor,259_000);assert.equal(report.can_close,false);assert.ok(report.blockers.length>0);
+  expect(report.bank_opening_minor).toBe(250_000);expect(report.bank_closing_minor).toBe(259_000);expect(report.can_close).toBe(false);expect(report.blockers.length>0).toBeTruthy();
   rejects(w,closeInput(falseBalance,report),controller);
 });
 
 test('missing statement items remain unresolved even if the submitted statement balances internally',()=>{
   const {w,start,end,rows}=fixture(),input=statementInput(w,start,end);input.lines=input.lines.slice(1);input.closing_balance_minor-=rows[0].amount_minor;
   const statement=record(w,input);matchAll(w,statement);const report=prepare(w,statement);
-  assert.equal(report.can_close,false);assert.ok(report.unmatched_bank_transaction_ids.includes(rows[0].id));assert.ok(report.blockers.length>0);rejects(w,closeInput(statement,report),controller);
+  expect(report.can_close).toBe(false);expect(report.unmatched_bank_transaction_ids.includes(rows[0].id)).toBeTruthy();expect(report.blockers.length>0).toBeTruthy();rejects(w,closeInput(statement,report),controller);
 });
 
 test('reconciliation requires exact linked cash journal amounts rather than mere journal presence',()=>{
@@ -94,7 +93,7 @@ test('reconciliation requires exact linked cash journal amounts rather than mere
     else if(invalid==='cash-account')entry.lines.find((item:any)=>item.account_id==='cash-bank').account_id='cash-processor';
     else for(const item of entry.lines){if(item.debit_minor)item.debit_minor++;if(item.credit_minor)item.credit_minor++;}
     matchAll(damaged,statement);const report=prepare(damaged,statement);
-    assert.equal(report.can_close,false);assert.ok(report.blockers.some((blocker:any)=>invalid==='amount'?blocker.code==='cash_journal_amount_mismatch':blocker.code==='missing_cash_journal'));
+    expect(report.can_close).toBe(false);expect(report.blockers.some((blocker:any)=>invalid==='amount'?blocker.code==='cash_journal_amount_mismatch':blocker.code==='missing_cash_journal')).toBeTruthy();
     rejects(damaged,closeInput(statement,report),controller);
   }
 });
@@ -110,17 +109,17 @@ test('late posting is a separate timing item and never rewrites the historical l
   act(w,{type:'close_period'});const operation=act(w,{type:'collect_invoice',invoice_id:w.invoices[0].id,amount_minor:5000},operator).operation;
   act(w,{type:'advance_time',hours:1});const cutoff=w.now,statement=record(w,statementInput(w,start,cutoff)),row=bankWindow(w,start,cutoff)[0];
   matchAll(w,statement);
-  const unposted=prepare(w,statement);assert.equal(unposted.can_close,false);rejects(w,closeInput(statement,unposted),controller);
+  const unposted=prepare(w,statement);expect(unposted.can_close).toBe(false);rejects(w,closeInput(statement,unposted),controller);
   act(w,{type:'advance_time',hours:1});act(w,{type:'reopen_period'});
   rejects(w,closeInput(statement,unposted),controller,'stale_reconciliation');matchAll(w,statement);
   const report=prepare(w,statement),entry=w.journals.find(journal=>journal.source_id===operation.id);
-  assert.equal(entry.posted_at,w.now);assert.ok(entry.posted_at>cutoff);assert.equal(report.book_closing_minor,bookBalanceAt(w,cutoff));assert.equal(report.book_closing_minor,100_000);assert.equal(report.bank_closing_minor,105_000);
-  assert.equal(report.bank_book_difference_minor,5000);assert.equal(report.later_posted_cash_minor,5000);assert.equal(report.adjusted_difference_minor,0);assert.equal(report.can_close,true);
-  assert.equal(report.timing_items.length,1);assert.equal(report.timing_items[0].journal_id,entry.id);assert.deepEqual(report.timing_items[0].bank_transaction_ids,[row.id]);assert.equal(report.timing_items[0].kind,'posted_after_cutoff');
+  expect(entry.posted_at).toBe(w.now);expect(entry.posted_at>cutoff).toBeTruthy();expect(report.book_closing_minor).toBe(bookBalanceAt(w,cutoff));expect(report.book_closing_minor).toBe(100_000);expect(report.bank_closing_minor).toBe(105_000);
+  expect(report.bank_book_difference_minor).toBe(5000);expect(report.later_posted_cash_minor).toBe(5000);expect(report.adjusted_difference_minor).toBe(0);expect(report.can_close).toBe(true);
+  expect(report.timing_items.length).toBe(1);expect(report.timing_items[0].journal_id).toBe(entry.id);expect(report.timing_items[0].bank_transaction_ids).toStrictEqual([row.id]);expect(report.timing_items[0].kind).toBe('posted_after_cutoff');
   rejects(w,{...closeInput(statement,report),acknowledged_timing_item_ids:[]},controller);
   rejects(w,{...closeInput(statement,report),acknowledged_timing_item_ids:['invented-timing-item']},controller);
   rejects(w,{...closeInput(statement,report),acknowledged_timing_item_ids:[report.timing_items[0].id,report.timing_items[0].id]},controller);
-  const before=economics(w);act(w,closeInput(statement,report));assert.deepEqual(economics(w),before);assert.equal(bookBalanceAt(w,cutoff),100_000);
+  const before=economics(w);act(w,closeInput(statement,report));expect(economics(w)).toStrictEqual(before);expect(bookBalanceAt(w,cutoff)).toBe(100_000);
 });
 
 test('closure requires distinct controller and current match evidence, while unrelated actions do not stale it',()=>{
@@ -130,14 +129,14 @@ test('closure requires distinct controller and current match evidence, while unr
   act(w,{type:'receive_email',from:'review@simulation.test',subject:'Unrelated review note',body:'This changes no reconciliation source.'});
   const original=closeInput(statement,report);act(w,original);
   act(w,{type:'reopen_reconciliation',statement_id:statement.id,reason:'Review a match again',external_event_id:reference('reopen')});
-  assert.equal(act(w,original).replayed,true);
-  assert.notEqual(w.bankStatements.find((row:any)=>row.id===statement.id).status,'closed');
+  expect(act(w,original).replayed).toBe(true);
+  expect(w.bankStatements.find((row:any)=>row.id===statement.id).status).not.toBe('closed');
   rejects(w,{...original,external_event_id:reference('old-report')},controller);
   const fresh=prepare(w,statement);
   act(w,{type:'unmatch_statement_line',statement_id:statement.id,line_id:statement.lines[0].id,reason:'Confirm original evidence'},operator);
   const ids=w.bankTransactions.filter(row=>statement.lines[0].source_refs.includes(row.id)).map(row=>row.id);match(w,statement,statement.lines[0],ids);
   rejects(w,closeInput(statement,fresh),controller);
-  const current=prepare(w,statement);assert.notEqual(current.source_fingerprint,fresh.source_fingerprint);act(w,closeInput(statement,current));
+  const current=prepare(w,statement);expect(current.source_fingerprint).not.toBe(fresh.source_fingerprint);act(w,closeInput(statement,current));
 });
 
 test('foreign statement, line, bank transaction and report IDs cannot manufacture a local reconciliation',()=>{
@@ -158,19 +157,19 @@ test('reopening and supersession retain old closure and match history while rele
   rejects(w,replacement,controller);
   act(w,{type:'reopen_reconciliation',statement_id:statement.id,reason:'Review revised bank evidence',external_event_id:reference('reopen-for-replacement')});
   const revised=act(w,replacement).statement;
-  assert.equal(revised.supersedes_id,statement.id);assert.equal(w.bankStatements.find((row:any)=>row.id===statement.id).superseded_by_id,revised.id);assert.equal(w.bankStatements.find((row:any)=>row.id===statement.id).status,'superseded');
-  assert.ok(w.reconciliationReports.some((row:any)=>row.id===report.id));
-  for(const id of oldMatchIds)assert.equal(w.reconciliationMatches.find((row:any)=>row.id===id).status,'superseded');
+  expect(revised.supersedes_id).toBe(statement.id);expect(w.bankStatements.find((row:any)=>row.id===statement.id).superseded_by_id).toBe(revised.id);expect(w.bankStatements.find((row:any)=>row.id===statement.id).status).toBe('superseded');
+  expect(w.reconciliationReports.some((row:any)=>row.id===report.id)).toBeTruthy();
+  for(const id of oldMatchIds)expect(w.reconciliationMatches.find((row:any)=>row.id===id).status).toBe('superseded');
   rejects(w,closeInput(statement,report),controller);
   rejects(w,{type:'match_statement_line',statement_id:statement.id,line_id:statement.lines[0].id,bank_transaction_ids:[w.bankTransactions[1].id]});
-  matchAll(w,revised);const next=prepare(w,revised);assert.equal(next.can_close,true);act(w,closeInput(revised,next));assert.deepEqual(economics(w),before);
+  matchAll(w,revised);const next=prepare(w,revised);expect(next.can_close).toBe(true);act(w,closeInput(revised,next));expect(economics(w)).toStrictEqual(before);
 });
 
 test('zero-funded opening bank row is an explicit no-op and does not require a nonexistent journal',()=>{
   const w=createWorld({kind:'saas-collections',orderCount:1,initialCashMinor:0}),start='2026-10-24T08:00:00.000Z';
-  assert.equal(w.bankTransactions[0].amount_minor,0);
+  expect(w.bankTransactions[0].amount_minor).toBe(0);
   const statement=record(w,statementInput(w,start,w.now)),report=prepare(w,statement);
-  assert.equal(report.bank_closing_minor,0);assert.equal(report.book_closing_minor,0);assert.equal(report.can_close,true);assert.deepEqual(report.unmatched_bank_transaction_ids,[]);act(w,closeInput(statement,report));
+  expect(report.bank_closing_minor).toBe(0);expect(report.book_closing_minor).toBe(0);expect(report.can_close).toBe(true);expect(report.unmatched_bank_transaction_ids).toStrictEqual([]);act(w,closeInput(statement,report));
 });
 
 test('new cutoff cash activity invalidates a prepared report even when existing matches remain unchanged',()=>{
@@ -178,15 +177,15 @@ test('new cutoff cash activity invalidates a prepared report even when existing 
   const payment=w.payments.find(row=>row.status==='succeeded');
   act(w,{type:'open_dispute',payment_id:payment.id,amount_minor:1,reason:'Processor fact received at the cutoff',external_event_id:reference('cutoff-dispute')});
   rejects(w,closeInput(statement,report),controller,'stale_reconciliation');
-  const refreshed=prepare(w,statement);assert.equal(refreshed.can_close,false);assert.notEqual(refreshed.source_fingerprint,report.source_fingerprint);assert.ok(refreshed.unmatched_bank_transaction_ids.length>0);
+  const refreshed=prepare(w,statement);expect(refreshed.can_close).toBe(false);expect(refreshed.source_fingerprint).not.toBe(report.source_fingerprint);expect(refreshed.unmatched_bank_transaction_ids.length>0).toBeTruthy();
 });
 
 test('new cash activity after cutoff leaves a prior period report valid and its historical balances unchanged',()=>{
   const {w,start,end}=fixture(),statement=record(w,statementInput(w,start,end));matchAll(w,statement);const report=prepare(w,statement),historical=report.bank_closing_minor;
   act(w,{type:'advance_time',hours:1});act(w,{type:'collect_invoice',invoice_id:w.invoices[2].id,amount_minor:700},operator);act(w,{type:'advance_time',hours:1});
-  assert.equal(bankBalanceAt(w,w.now),historical+700);assert.equal(bookBalanceAt(w,end),historical);
+  expect(bankBalanceAt(w,w.now)).toBe(historical+700);expect(bookBalanceAt(w,end)).toBe(historical);
   act(w,closeInput(statement,report));
-  const retained=w.reconciliationReports.find((row:any)=>row.id===report.id);assert.equal(retained.bank_closing_minor,historical);assert.equal(retained.book_closing_minor,historical);
+  const retained=w.reconciliationReports.find((row:any)=>row.id===report.id);expect(retained.bank_closing_minor).toBe(historical);expect(retained.book_closing_minor).toBe(historical);
 });
 
 test('future and ambiguous journals cannot satisfy statement cash proof',()=>{
@@ -196,6 +195,6 @@ test('future and ambiguous journals cannot satisfy statement cash proof',()=>{
     const damaged=structuredClone(w),journal=damaged.journals.find(row=>row.id===entry.id);
     if(variant==='future')journal.posted_at='2026-10-25T00:00:00.000Z';
     else damaged.journals.push({...structuredClone(journal),id:'duplicate-cash-journal'});
-    const report=prepare(damaged,statement);assert.equal(report.can_close,false);assert.ok(report.blockers.some((blocker:any)=>blocker.code===(variant==='future'?'future_cash_journal':'ambiguous_cash_journal')));rejects(damaged,closeInput(statement,report),controller);
+    const report=prepare(damaged,statement);expect(report.can_close).toBe(false);expect(report.blockers.some((blocker:any)=>blocker.code===(variant==='future'?'future_cash_journal':'ambiguous_cash_journal'))).toBeTruthy();rejects(damaged,closeInput(statement,report),controller);
   }
 });

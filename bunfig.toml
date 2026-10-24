@@ -1,0 +1,6 @@
+# Keys reach gram only through its own key-file loader (src/agent.ts, src/generator.ts),
+# so Bun must not copy .env into process.env for the service or the test suite.
+env = false
+
+[test]
+preload = ["./test/setup.ts"]

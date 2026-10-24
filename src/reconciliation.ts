@@ -2,7 +2,6 @@
  * create cash, journal entries or settlement receipts. Historical book balances
  * use actual journal posting time; later postings remain dated reconciling items.
  */
-import {createHash} from 'node:crypto';
 import type {Action,Actor,World} from './world.ts';
 import type {ProcurementHooks} from './procurement.ts';
 import {normalizedLines,treasuryCashProof,treasuryValuationProof} from './treasury.ts';
@@ -19,7 +18,7 @@ export const reconciliationRequirements:Record<string,{role:'controller'|'operat
 };
 export function normalizeReconciliation(w:World){for(const collection of Object.values(reconciliationCollections))w[collection]??=[];}
 const canonical=(value:any):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
-const hash=(value:any)=>createHash('sha256').update(canonical(value)).digest('hex');
+const hash=(value:any)=>new Bun.CryptoHasher('sha256').update(canonical(value)).digest('hex');
 function timestamp(value:any,label:string,h:ReconciliationHooks){if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)||!Number.isFinite(Date.parse(value))||new Date(value).toISOString()!==value)h.fail('invalid_statement_timestamp',`${label} must be a valid UTC ISO timestamp with milliseconds`);return value as string;}
 function exactTimestamp(value:any):value is string {return typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString()===value;}
 function amount(value:any,label:string,h:ReconciliationHooks){return h.integer(value,label,-1_000_000_000_000,1_000_000_000_000);}

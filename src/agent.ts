@@ -2,11 +2,9 @@ import { createSdkMcpServer, query, tool } from '@anthropic-ai/claude-agent-sdk'
 import type { Options, SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createWorld, DomainError, systemCatalog } from './world.ts';
 import {sourceContextSchema} from './source-context.ts';
 import {treasuryControlsSchema} from './treasury-scenario.ts';
@@ -16,7 +14,7 @@ import {providerContracts,resolveProviderOperation,assertNoProviderCredentials} 
 import {manualJournalSystems} from './manual-journals.ts';
 
 const DEFAULT_MODEL = 'claude-sonnet-5-5';
-const ENV_FILE = fileURLToPath(new URL('../.env', import.meta.url));
+const ENV_FILE = Bun.fileURLToPath(new URL('../.env', import.meta.url));
 const MAX_AGENT_TURNS = 30;
 const MAX_AGENT_BUDGET_USD = 2;
 const MAX_DURATION_MS = 5 * 60_000;
@@ -573,7 +571,7 @@ export async function generateScenario(prompt: string, options: { model?: string
     }),
   ] });
   try {
-    await emit({ type: 'scenario.generation.started', model, prompt_sha256: createHash('sha256').update(prompt).digest('hex'), prompt_chars: prompt.length, max_budget_usd: 0.5 });
+    await emit({ type: 'scenario.generation.started', model, prompt_sha256: new Bun.CryptoHasher('sha256').update(prompt).digest('hex'), prompt_chars: prompt.length, max_budget_usd: 0.5 });
     if (controller.signal.aborted) throw new AgentError('agent_cancelled', 'Scenario generation was cancelled before submission.', 409);
     stream = query({ prompt, options: {
       ...baseOptions(workspace, key, model, controller),

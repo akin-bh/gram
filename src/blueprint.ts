@@ -1,4 +1,3 @@
-import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import type {Action,Actor,World} from './world.ts';
 import {assetBlueprintShape,registerBlueprintAssetRefs,validateBlueprintAssets,materializeBlueprintAssets,materializeBlueprintAssetDisposalTerms} from './blueprint-assets.ts';
@@ -129,7 +128,7 @@ export type BlueprintHooks={perform:(action:Action,actor:Actor)=>{result:any;eve
 /** Called only during construction of an unsaved world. A failed transition
  * rejects that complete constructor; no partial world is returned or saved. */
 export function materializeBlueprint(w:World,input:unknown,h:BlueprintHooks){
-  const b=validateBlueprint(input),digest=createHash('sha256').update(canonical(b)).digest('hex');
+  const b=validateBlueprint(input),digest=new Bun.CryptoHasher('sha256').update(canonical(b)).digest('hex');
   const controller:Actor={id:'blueprint-source-controller',role:'controller'},operator:Actor={id:'blueprint-historical-operator',role:'operator'},reviewer:Actor={id:'blueprint-review-controller',role:'controller'};
   const refs:Record<string,{id:string;kind:string}>={operating:{id:'cash-bank',kind:'bank_account'}};
   w.generationHistory=[];

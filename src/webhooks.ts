@@ -1,4 +1,3 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Store, ServiceError, canonical, hash, redact } from './store.ts';
 
 export type WebhookOptions = {
@@ -48,7 +47,7 @@ const bounded = (value: number | undefined, fallback: number, min: number, max: 
 const eventPattern = /^(?:\*|[a-z][a-z0-9_.-]{0,99}(?:\.\*)?)$/;
 const eventType = /^[a-z][a-z0-9_.-]{0,99}$/;
 const matches = (pattern: string, type: string) => pattern === '*' || pattern === type || (pattern.endsWith('.*') && type.startsWith(pattern.slice(0, -1)));
-const signature = (secret: string, timestamp: number, raw: string) => createHmac('sha256', secret).update(`${timestamp}.${raw}`).digest('hex');
+const signature = (secret: string, timestamp: number, raw: string) => new Bun.CryptoHasher('sha256', secret).update(`${timestamp}.${raw}`).digest('hex');
 
 /**
  * Transactional local webhook outbox. enqueue() is synchronous and deliberately
@@ -66,7 +65,7 @@ export class Webhooks {
   private leaseMs: number;
   private maxResponseBytes: number;
   private signatureToleranceSeconds: number;
-  private owner = randomUUID();
+  private owner = crypto.randomUUID();
   private stopped = false;
   private pumping?: Promise<DeliveryResult>;
   private pumpingWorld?: string;
@@ -143,7 +142,7 @@ export class Webhooks {
     return this.store.transaction(() => {
       const count = this.store.db.prepare('SELECT COUNT(*) AS n FROM webhook_subscriptions WHERE world=? AND active=1').get(world) as { n: number };
       if (count.n >= 100) throw new ServiceError(409, 'webhook_subscription_limit');
-      const row: Subscription = { id: `whsub_${randomUUID()}`, world, url, events: JSON.stringify([...new Set(events)]), signing_secret: `whsec_${randomBytes(32).toString('hex')}`, signing_style: signingStyle, active: 1, created_at: this.now() };
+      const row: Subscription = { id: `whsub_${crypto.randomUUID()}`, world, url, events: JSON.stringify([...new Set(events)]), signing_secret: `whsec_${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex')}`, signing_style: signingStyle, active: 1, created_at: this.now() };
       this.store.db.prepare('INSERT INTO webhook_subscriptions(id,world,url,events,signing_secret,signing_style,active,created_at) VALUES(?,?,?,?,?,?,?,?)').run(row.id, world, row.url, row.events, row.signing_secret, row.signing_style, row.active, row.created_at);
       this.store.audit(world, 'webhook.registered', this.publicSubscription(row));
       return { ...this.publicSubscription(row), secret: row.signing_secret, secret_note: 'Save this signing secret now. It is not returned by list or delivery APIs.' };
@@ -262,7 +261,7 @@ export class Webhooks {
     const generic = headers.get('x-finance-world-signature');
     const signatures = generic ? [generic.replace(/^v1=/, '')] : stripeParts.filter(part => part.startsWith('v1=')).map(part => part.slice(3));
     const expected = Buffer.from(signature(sub.signing_secret, timestamp, raw), 'hex');
-    if (!signatures.some(candidate => /^[a-f0-9]{64}$/i.test(candidate) && timingSafeEqual(expected, Buffer.from(candidate, 'hex')))) throw new ServiceError(401, 'invalid_webhook_signature');
+    if (!signatures.some(candidate => /^[a-f0-9]{64}$/i.test(candidate) && crypto.timingSafeEqual(expected, Buffer.from(candidate, 'hex')))) throw new ServiceError(401, 'invalid_webhook_signature');
     const event = JSON.parse(raw) as WebhookEnvelope;
     return { event, event_id: eventId, delivery_id: deliveryId, subscription_id: subId, timestamp };
   }

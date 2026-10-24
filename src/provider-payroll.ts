@@ -4,7 +4,6 @@
  * The finance_world extension explicitly carries source authority, opaque
  * concurrency versions, controller review and separate wage/tax settlement.
  */
-import {createHash} from 'node:crypto';
 import {DomainError} from './world.ts';
 import type {World} from './world.ts';
 import type {ProviderRequest,ProviderResponse} from './provider-adapters.ts';
@@ -26,7 +25,7 @@ export const providerPayrollRoutes=[
 
 function fail(code:string,message:string,status=400):never{throw new DomainError(status,code,message);}
 const clone=<T>(value:T):T=>structuredClone(value);
-const hash=(value:any)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const hash=(value:any)=>new Bun.CryptoHasher('sha256').update(JSON.stringify(value)).digest('hex');
 const find=(rows:any[],id:string,label:string)=>rows.find(row=>row.id===id)??fail('resource_missing',`${label} does not exist in this world`,404);
 function decode(value:string){try{const result=decodeURIComponent(value);if(!result||/[\u0000-\u001f\u007f/\\]/.test(result))fail('invalid_parameter','Invalid resource identifier');return result;}catch(error){if(error instanceof DomainError)throw error;return fail('invalid_parameter','Malformed resource identifier');}}
 function fields(value:any,allowed:string[]){if(!value||typeof value!=='object'||Array.isArray(value))fail('invalid_body','Expected an object body',422);for(const key of Object.keys(value))if(!allowed.includes(key))fail('unsupported_field',`Unsupported Gusto subset field: ${key}`,501);}

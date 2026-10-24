@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
 import { Store, ServiceError, hash, secret } from './store.ts';
 
 export type Actor = { id: string; role: 'controller' | 'agent' | 'operator'; world?: string; system?: string; scopes?: string[]; runId?: string };
@@ -20,7 +18,7 @@ export class OAuth {
       let u: URL; try { u = new URL(uri); } catch { return fail('invalid_redirect_uri'); }
       if (u.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) || u.username || u.password || u.hash) fail('invalid_redirect_uri', 'Register an exact loopback HTTP callback.');
     }
-    const client = { id: 'client-' + randomUUID(), name: input.name.slice(0, 120), redirect_uris: input.redirect_uris };
+    const client = { id: 'client-' + crypto.randomUUID(), name: input.name.slice(0, 120), redirect_uris: input.redirect_uris };
     this.store.put('clients', client.id, client);
     return { client_id: client.id, client_name: client.name, redirect_uris: client.redirect_uris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'] };
   }
@@ -29,7 +27,7 @@ export class OAuth {
     const state = secret(), verifier = secret();
     this.store.put('pending-oauth', hash(state), { world, system, session, verifier, expires_at: time() + 600_000 });
     const u = new URL(`${this.baseUrl}/oauth/${system}/authorize`);
-    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    const challenge = new Bun.CryptoHasher('sha256').update(verifier).digest('base64url');
     u.search = new URLSearchParams({ client_id: 'finance-world-console', redirect_uri: this.baseUrl + '/oauth/callback', response_type: 'code', scope: 'read write', state, world_id: world, code_challenge: challenge, code_challenge_method: 'S256' }).toString();
     this.store.audit(world, 'oauth.started', { system }, 'controller');
     return { authorization_url: u.href };
@@ -52,9 +50,9 @@ export class OAuth {
     const p = this.parameters(system, params);
     return { provider: this.system(system), company: this.store.world(p.world).name, world: p.world, client: p.client.name, scopes: p.scopes };
   }
-  consentPage(system: string, params: URLSearchParams) {
+  async consentPage(system: string, params: URLSearchParams) {
     this.parameters(system, params);
-    return readFileSync(new URL('../web/index.html', import.meta.url), 'utf8').replace(/<title>[^<]*<\/title>/, '<title>Allow connection · gram</title>');
+    return (await Bun.file(new URL('../web/index.html', import.meta.url)).text()).replace(/<title>[^<]*<\/title>/, '<title>Allow connection · gram</title>');
   }
   authorize(system: string, params: URLSearchParams, actor: Actor) {
     const p = this.parameters(system, params), redirect = new URL(p.redirect_uri);
@@ -72,7 +70,7 @@ export class OAuth {
   }
   mint(data: { world: string; system: string; client_id: string; actor: string; scopes: string[]; family?: string }) {
     const access = secret(), refresh = secret();
-    const grant: Grant = { ...data, id: randomUUID(), family: data.family ?? randomUUID(), expires_at: time() + 3600_000, refresh_expires_at: time() + 30 * 86400_000, revoked: false, access_hash: hash(access), refresh_hash: hash(refresh) };
+    const grant: Grant = { ...data, id: crypto.randomUUID(), family: data.family ?? crypto.randomUUID(), expires_at: time() + 3600_000, refresh_expires_at: time() + 30 * 86400_000, revoked: false, access_hash: hash(access), refresh_hash: hash(refresh) };
     this.store.put('grants', grant.id, grant);
     this.store.put('access', grant.access_hash, { grant: grant.id });
     this.store.put('refresh', grant.refresh_hash, { grant: grant.id });
@@ -91,7 +89,7 @@ export class OAuth {
       if (input.grant_type === 'authorization_code') {
         const p = this.store.get('codes', hash(input.code ?? ''));
         if (!p || p.expires_at < time() || p.system !== system || input.client_id !== p.client_id || input.redirect_uri !== p.redirect_uri) fail('invalid_grant');
-        if (!/^[a-zA-Z0-9._~-]{43,128}$/.test(input.code_verifier ?? '') || createHash('sha256').update(input.code_verifier).digest('base64url') !== p.challenge) fail('invalid_grant', 'PKCE verifier does not match.');
+        if (!/^[a-zA-Z0-9._~-]{43,128}$/.test(input.code_verifier ?? '') || new Bun.CryptoHasher('sha256').update(input.code_verifier).digest('base64url') !== p.challenge) fail('invalid_grant', 'PKCE verifier does not match.');
         this.store.delete('codes', hash(input.code));
         return this.mint({ world: p.world, system, client_id: p.client_id, actor: p.actor, scopes: p.scopes });
       }

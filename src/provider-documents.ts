@@ -2,7 +2,6 @@
  * Canonical text is never converted into a vendor-native format by implication.
  * Authentication and read scope enforcement belong to the provider gateway.
  */
-import {createHash} from 'node:crypto';
 import {DomainError} from './world.ts';
 import type {World} from './world.ts';
 import type {ProviderRequest,ProviderResponse} from './provider-adapters.ts';
@@ -21,7 +20,7 @@ export const providerDocumentRoutes = [
 ] as const;
 
 function fail(code:string,message:string,status=400):never{throw new DomainError(status,code,message);}
-const hash=(value:string|Uint8Array,algorithm='sha256')=>createHash(algorithm).update(value).digest('hex');
+const hash=(value:string|Uint8Array,algorithm:Bun.SupportedCryptoAlgorithms='sha256')=>new Bun.CryptoHasher(algorithm).update(value).digest('hex');
 const MAX_CONTENT_BYTES=1024*1024;
 const NATIVE_DOC='application/vnd.google-apps.document';
 type Source={row:any;bytes:Buffer;mime:string;name:string;source:Record<string,unknown>};

@@ -1,16 +1,14 @@
 import {test,expect} from 'bun:test';
-import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {createHash,randomUUID} from 'node:crypto';
 import {start} from './integration-fixture.ts';
 async function grant(f:Awaited<ReturnType<typeof start>>,world:string,system:string,scope:string){
  const home=await fetch(f.base);const cookie=home.headers.get('set-cookie')!.split(';')[0];await home.text();
- const redirect='http://127.0.0.1:9123/native-provider-callback',client=(await f.call('/api/oauth/clients',{name:'Native provider test',redirect_uris:[redirect]})).data.client_id,verifier=randomUUID().replaceAll('-','')+randomUUID().replaceAll('-','');
- const form=new URLSearchParams({client_id:client,redirect_uri:redirect,response_type:'code',scope,state:randomUUID(),world_id:world,code_challenge:createHash('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256',decision:'allow'});
- const consent=await fetch(`${f.base}/oauth/${system}/authorize`,{method:'POST',headers:{Cookie:cookie,Origin:f.base,'Content-Type':'application/x-www-form-urlencoded'},body:form,redirect:'manual'});assert.equal(consent.status,303);await consent.text();const code=new URL(consent.headers.get('location')!).searchParams.get('code');
- const token=await f.call(`/oauth/${system}/token`,{grant_type:'authorization_code',client_id:client,redirect_uri:redirect,code,code_verifier:verifier},undefined,randomUUID(),true);assert.equal(token.status,200,JSON.stringify(token.data));return token.data.access_token;
+ const redirect='http://127.0.0.1:9123/native-provider-callback',client=(await f.call('/api/oauth/clients',{name:'Native provider test',redirect_uris:[redirect]})).data.client_id,verifier=crypto.randomUUID().replaceAll('-','')+crypto.randomUUID().replaceAll('-','');
+ const form=new URLSearchParams({client_id:client,redirect_uri:redirect,response_type:'code',scope,state:crypto.randomUUID(),world_id:world,code_challenge:new Bun.CryptoHasher('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256',decision:'allow'});
+ const consent=await fetch(`${f.base}/oauth/${system}/authorize`,{method:'POST',headers:{Cookie:cookie,Origin:f.base,'Content-Type':'application/x-www-form-urlencoded'},body:form,redirect:'manual'});expect(consent.status).toBe(303);await consent.text();const code=new URL(consent.headers.get('location')!).searchParams.get('code');
+ const token=await f.call(`/oauth/${system}/token`,{grant_type:'authorization_code',client_id:client,redirect_uri:redirect,code,code_verifier:verifier},undefined,crypto.randomUUID(),true);expect(token.status,JSON.stringify(token.data)).toBe(200);return token.data.access_token;
 }
 test('native source documents retain exact bytes, OAuth scope, world isolation and conditional HTTP evidence',async()=>{
  const folder=mkdtempSync(join(tmpdir(),'gram-native-http-'));const f=await start(join(folder,'world.sqlite'));
@@ -20,7 +18,7 @@ test('native source documents retain exact bytes, OAuth scope, world isolation a
   const token=await grant(f,world.id,'google-drive','read'),get=(path:string,headers:Record<string,string>={})=>fetch(f.base+path,{headers:{Authorization:`Bearer ${token}`,...headers}});
   const list=await get(prefix+'?pageSize=2&fields=files(id,name),nextPageToken');expect(list.status).toBe(200);const body=await list.json();expect(body.files).toHaveLength(2);expect(body.nextPageToken).toBeString();
   const media=await get(`${prefix}/${doc.id}?alt=media`);expect(media.status).toBe(200);expect(media.headers.get('content-type')).toBe('text/plain; charset=utf-8');expect(media.headers.get('x-request-id')).toBeString();expect(Buffer.from(await media.arrayBuffer())).toEqual(Buffer.from(doc.body,'utf8'));
-  const etag=media.headers.get('etag')!;expect(etag).toBe('"'+createHash('sha256').update(doc.body).digest('hex')+'"');
+  const etag=media.headers.get('etag')!;expect(etag).toBe('"'+new Bun.CryptoHasher('sha256').update(doc.body).digest('hex')+'"');
   const unchanged=await get(`${prefix}/${doc.id}?alt=media`,{'If-None-Match':etag});expect(unchanged.status).toBe(304);expect(await unchanged.text()).toBe('');
   const wrongEtag=await get(`${prefix}/${doc.id}?alt=media`,{'If-Match':'"wrong"'});expect(wrongEtag.status).toBe(412);await wrongEtag.text();
   const cross=await get(`/providers/google-drive/worlds/${other.id}/drive/v3/files/${doc.id}?alt=media`);expect(cross.status).toBe(403);await cross.text();

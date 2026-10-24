@@ -1,13 +1,12 @@
 import { Database } from 'bun:sqlite';
-import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export const canonical = (value: unknown): string => JSON.stringify(value, (_key, v) =>
   v && typeof v === 'object' && !Array.isArray(v)
     ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
-export const hash = (value: string|Uint8Array) => createHash('sha256').update(value).digest('hex');
-export const secret = () => randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+export const hash = (value: string|Uint8Array) => new Bun.CryptoHasher('sha256').update(value).digest('hex');
+export const secret = () => crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
 const sensitive = /^(authorization|proxy-authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token|client[_-]?secret|code[_-]?verifier|token|(?:[a-z0-9]+[_-])*api[_-]?key|password|secret)$/i;
 export function redact(value: any): any {
   if (Array.isArray(value)) return value.map(redact);

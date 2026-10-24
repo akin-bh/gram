@@ -1,12 +1,10 @@
 import {test,expect} from 'bun:test';
-import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {randomUUID} from 'node:crypto';
 import {hash} from '../src/store.ts';
 import {start} from './integration-fixture.ts';
-const okay=(r:any)=>{assert.equal(r.status,200,JSON.stringify(r.data));return r.data.result;};
+const okay=(r:any)=>{expect(r.status,JSON.stringify(r.data)).toBe(200);return r.data.result;};
 test('Gusto native preparation, calculation and submission persist original responses atomically through approvals, outages and restart',async()=>{
  const folder=mkdtempSync(join(tmpdir(),'gram-gusto-native-')),database=join(folder,'world.sqlite');let f=await start(database);
  try{

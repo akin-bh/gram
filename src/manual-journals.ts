@@ -2,7 +2,6 @@
  * They never reserve cash or defer an accepted posting: a distinct controller
  * posts synchronously only when the dated source proposal is still valid.
  */
-import {createHash} from 'node:crypto';
 import {requireErpIdentitySpace} from './erp-identities.ts';
 import {DomainError,type Action,type Actor,type World} from './world.ts';
 
@@ -30,7 +29,7 @@ export type ManualJournalHooks={
 };
 export function normalizeManualJournals(w:World){w.manualJournals??=[];w.manualJournalRegisters??=[];}
 const canonical=(value:any):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
-const hash=(value:any)=>createHash('sha256').update(canonical(value)).digest('hex');
+const hash=(value:any)=>new Bun.CryptoHasher('sha256').update(canonical(value)).digest('hex');
 export const manualJournalVersion=(record:any)=>hash(record);
 const sourceVersion=(record:any)=>hash({...(record.accounting_system!==undefined?{accounting_system:record.accounting_system}:{}),...(record.erp_configuration_id!==undefined?{erp_configuration_id:record.erp_configuration_id,erp_configuration_snapshot:record.erp_configuration_snapshot}:{}),...(record.journal_register_id!==undefined?{journal_register_id:record.journal_register_id,journal_register_snapshot:record.journal_register_snapshot}:{}),description:record.description,date:record.date,currency:record.currency,lines:record.lines,total_minor:record.total_minor,source_document_ids:record.source_document_ids,source_documents:record.source_documents});
 function fields(value:any,allowed:string[],h:ManualJournalHooks){if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!allowed.includes(key)))h.fail('invalid_manual_journal_field','Manual journal contains an unsupported field');}

@@ -1,6 +1,4 @@
-import {test} from 'bun:test';
-import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {test,expect} from 'bun:test';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -14,7 +12,7 @@ async function fixture(database=':memory:') {
     const response=await fetch(base+path,{method:input===undefined?'GET':'POST',headers:{...(token?{Authorization:`Bearer ${token}`}:anonymous?{}:{Cookie:cookie}),...(input===undefined?{}:{'Content-Type':'application/json'})},...(input===undefined?{}:{body:JSON.stringify(input)})});
     return {status:response.status,data:await response.json()};
   };
-  const create=async(name='Audit example')=>{const result=await call('/api/worlds',{name,kind:'saas-collections',orderCount:1});assert.equal(result.status,201);return result.data.world;};
+  const create=async(name='Audit example')=>{const result=await call('/api/worlds',{name,kind:'saas-collections',orderCount:1});expect(result.status).toBe(201);return result.data.world;};
   return {server,base,cookie,call,create,close:()=>server.close()};
 }
 
@@ -27,20 +25,20 @@ test('recent audit pages keep a stable snapshot across new events, read observat
       f.server.store.audit(other.id,'operation.created',{ordinal:n});
     }
     const originalWorld=f.server.store.world(world.id),before=f.server.store.events(world.id,0,1000),expected=[...before].reverse();
-    const first=await f.call(prefix+'?order=desc&scope=all&limit=3');assert.equal(first.status,200);
-    assert.deepEqual(first.data.data,expected.slice(0,3));assert.equal(first.data.snapshot_seq,before.at(-1).seq);assert.equal(first.data.head_seq,first.data.snapshot_seq);
+    const first=await f.call(prefix+'?order=desc&scope=all&limit=3');expect(first.status).toBe(200);
+    expect(first.data.data).toStrictEqual(expected.slice(0,3));expect(first.data.snapshot_seq).toBe(before.at(-1).seq);expect(first.data.head_seq).toBe(first.data.snapshot_seq);
     const later=f.server.store.audit(world.id,'operation.created',{later:true});
     let cursor=first.data.next_cursor,seen=[...first.data.data],pages=0;
     while(cursor) {
       const page=await f.call(prefix+`?order=desc&scope=all&limit=3&before=${cursor}&snapshot=${first.data.snapshot_seq}`);
-      assert.equal(page.status,200);assert.equal(page.data.snapshot_seq,first.data.snapshot_seq);assert.ok(page.data.head_seq>=later.seq);
-      seen.push(...page.data.data);cursor=page.data.next_cursor;assert.ok(++pages<8,'Reading the log must not create endless pages');
+      expect(page.status).toBe(200);expect(page.data.snapshot_seq).toBe(first.data.snapshot_seq);expect(page.data.head_seq>=later.seq).toBeTruthy();
+      seen.push(...page.data.data);cursor=page.data.next_cursor;expect(++pages<8,'Reading the log must not create endless pages').toBeTruthy();
     }
-    assert.deepEqual(seen,expected);assert.equal(new Set(seen.map(row=>row.seq)).size,seen.length);
-    const fresh=await f.call(prefix+'?order=desc&scope=activity&limit=1');assert.equal(fresh.data.data[0].seq,later.seq);
-    const legacy=await f.call(prefix+'?after=0&limit=2');assert.deepEqual(Object.keys(legacy.data).sort(),['data','next_cursor']);assert.deepEqual(legacy.data.data,before.slice(0,2));
-    const legacyNext=await f.call(prefix+`?after=${legacy.data.next_cursor}&limit=2`);assert.deepEqual(legacyNext.data.data,before.slice(2,4));
-    assert.deepEqual(f.server.store.world(world.id),originalWorld);assert.deepEqual(f.server.store.events(world.id,0,1000).slice(0,before.length),before);assert.equal(f.server.store.verify(world.id).valid,true);
+    expect(seen).toStrictEqual(expected);expect(new Set(seen.map(row=>row.seq)).size).toBe(seen.length);
+    const fresh=await f.call(prefix+'?order=desc&scope=activity&limit=1');expect(fresh.data.data[0].seq).toBe(later.seq);
+    const legacy=await f.call(prefix+'?after=0&limit=2');expect(Object.keys(legacy.data).sort()).toStrictEqual(['data','next_cursor']);expect(legacy.data.data).toStrictEqual(before.slice(0,2));
+    const legacyNext=await f.call(prefix+`?after=${legacy.data.next_cursor}&limit=2`);expect(legacyNext.data.data).toStrictEqual(before.slice(2,4));
+    expect(f.server.store.world(world.id)).toStrictEqual(originalWorld);expect(f.server.store.events(world.id,0,1000).slice(0,before.length)).toStrictEqual(before);expect(f.server.store.verify(world.id).valid).toBe(true);
   } finally {await f.close();}
 });
 
@@ -67,15 +65,15 @@ test('audit scopes and literal Unicode search filter before pagination while ret
     const literal=emit('action.completed',{reference:'literal %_ marker',password:'secret-for-redaction-check'});
     const before=f.server.store.events(world.id,0,1000),snapshot=before.at(-1).seq;
     const query=async(scope:string,q:string,limit=100)=>f.call(prefix+'?'+new URLSearchParams({order:'desc',scope,q,limit:String(limit),snapshot:String(snapshot)}));
-    const all=await query('all','NEEDLE CAFÉ');assert.equal(all.status,200);assert.deepEqual(all.data.data.map((row:any)=>row.seq),[...hidden,...activity,...errors,literal].reverse().map(row=>row.seq));
-    const meaningful=await query('activity','needle');assert.deepEqual(meaningful.data.data.map((row:any)=>row.seq),[...activity,...errors,literal].reverse().map(row=>row.seq));
-    const failed=await query('errors','needle');assert.deepEqual(failed.data.data.map((row:any)=>row.seq),[...errors].reverse().map(row=>row.seq));
-    const bounded=await query('errors','needle',1);assert.equal(bounded.data.data[0].seq,errors.at(-1)!.seq);assert.equal(bounded.data.next_cursor,String(errors.at(-1)!.seq));
-    const exact=await query('all','%_');assert.deepEqual(exact.data.data.map((row:any)=>row.seq),[literal.seq]);assert.equal(exact.data.next_cursor,null);
-    assert.equal((await query('all',"' OR 1=1 --")).data.data.length,0);
-    assert.equal((await query('all','secret-for-redaction-check')).data.data.length,0);
-    assert.equal((await f.call(prefix+'/events/'+literal.seq)).data.data.password,'[REDACTED]');
-    assert.deepEqual(f.server.store.events(world.id,0,1000).slice(0,before.length),before);assert.equal(f.server.store.verify(world.id).valid,true);
+    const all=await query('all','NEEDLE CAFÉ');expect(all.status).toBe(200);expect(all.data.data.map((row:any)=>row.seq)).toStrictEqual([...hidden,...activity,...errors,literal].reverse().map(row=>row.seq));
+    const meaningful=await query('activity','needle');expect(meaningful.data.data.map((row:any)=>row.seq)).toStrictEqual([...activity,...errors,literal].reverse().map(row=>row.seq));
+    const failed=await query('errors','needle');expect(failed.data.data.map((row:any)=>row.seq)).toStrictEqual([...errors].reverse().map(row=>row.seq));
+    const bounded=await query('errors','needle',1);expect(bounded.data.data[0].seq).toBe(errors.at(-1)!.seq);expect(bounded.data.next_cursor).toBe(String(errors.at(-1)!.seq));
+    const exact=await query('all','%_');expect(exact.data.data.map((row:any)=>row.seq)).toStrictEqual([literal.seq]);expect(exact.data.next_cursor).toBeNull();
+    expect((await query('all',"' OR 1=1 --")).data.data.length).toBe(0);
+    expect((await query('all','secret-for-redaction-check')).data.data.length).toBe(0);
+    expect((await f.call(prefix+'/events/'+literal.seq)).data.data.password).toBe('[REDACTED]');
+    expect(f.server.store.events(world.id,0,1000).slice(0,before.length)).toStrictEqual(before);expect(f.server.store.verify(world.id).valid).toBe(true);
   } finally {await f.close();}
 });
 
@@ -85,18 +83,18 @@ test('audit detail is controller-only and world-scoped; verify and full chronolo
     const world=await f.create(),other=await f.create('Private other'),prefix=`/api/worlds/${world.id}/audit`;
     const record=f.server.store.audit(world.id,'agent.trace',{type:'agent.tool.request',run_id:'run-one',body:{secret:'hidden',reference:'source-one'}},'agent:run-one');
     const foreign=f.server.store.audit(other.id,'operation.created',{reference:'other-world-secret'});
-    const detail=await f.call(prefix+'/events/'+record.seq);assert.equal(detail.status,200);assert.deepEqual(detail.data,record);assert.equal(detail.data.data.body.secret,'[REDACTED]');
-    assert.equal((await f.call(prefix+'/events/'+foreign.seq)).status,404);assert.equal((await f.call(prefix+'/events/999999')).status,404);
-    const token=randomUUID();f.server.store.put('agent-tokens',hash(token),{world:world.id,actor:'agent-world:'+world.id,runId:'run-one',expires_at:Date.now()+60000});
+    const detail=await f.call(prefix+'/events/'+record.seq);expect(detail.status).toBe(200);expect(detail.data).toStrictEqual(record);expect(detail.data.data.body.secret).toBe('[REDACTED]');
+    expect((await f.call(prefix+'/events/'+foreign.seq)).status).toBe(404);expect((await f.call(prefix+'/events/999999')).status).toBe(404);
+    const token=crypto.randomUUID();f.server.store.put('agent-tokens',hash(token),{world:world.id,actor:'agent-world:'+world.id,runId:'run-one',expires_at:Date.now()+60000});
     for(const route of [prefix+'?order=desc&scope=all',prefix+'/events/'+record.seq,prefix+'/verify',prefix+'/export']) {
-      assert.equal((await f.call(route,undefined,token)).status,403);assert.equal((await f.call(route,undefined,undefined,true)).status,401);
+      expect((await f.call(route,undefined,token)).status).toBe(403);expect((await f.call(route,undefined,undefined,true)).status).toBe(401);
     }
     const prior=f.server.store.events(world.id,0,1000),exported=await fetch(f.base+prefix+'/export',{headers:{Cookie:f.cookie}});
-    assert.equal(exported.status,200);assert.match(exported.headers.get('content-type')!,/application\/x-ndjson/);
-    const rows=(await exported.text()).trim().split('\n').map(line=>JSON.parse(line));assert.deepEqual(rows,prior);assert.deepEqual(rows.find(row=>row.seq===record.seq),record);
-    const observed=f.server.store.events(world.id,0,1000).at(-1);assert.equal(observed.type,'http.request');assert.deepEqual(observed.data.response,{audit_read:true});
-    const verification=await f.call(prefix+'/verify');assert.equal(verification.status,200);assert.equal(verification.data.valid,true);assert.equal(verification.data.head,observed.hash);
-    assert.deepEqual(f.server.store.events(world.id,0,1000).slice(0,prior.length),prior);
+    expect(exported.status).toBe(200);expect(exported.headers.get('content-type')!).toMatch(/application\/x-ndjson/);
+    const rows=(await exported.text()).trim().split('\n').map(line=>JSON.parse(line));expect(rows).toStrictEqual(prior);expect(rows.find(row=>row.seq===record.seq)).toStrictEqual(record);
+    const observed=f.server.store.events(world.id,0,1000).at(-1);expect(observed.type).toBe('http.request');expect(observed.data.response).toStrictEqual({audit_read:true});
+    const verification=await f.call(prefix+'/verify');expect(verification.status).toBe(200);expect(verification.data.valid).toBe(true);expect(verification.data.head).toBe(observed.hash);
+    expect(f.server.store.events(world.id,0,1000).slice(0,prior.length)).toStrictEqual(prior);
   } finally {await f.close();}
 });
 
@@ -106,12 +104,12 @@ test('audit query validation and durable sequence lookups survive restart withou
     const world=await f.create(),prefix=`/api/worlds/${world.id}/audit`,original=f.server.store.world(world.id);
     const record=f.server.store.audit(world.id,'company.renamed',{name:'Example',previous_name:'Earlier'},'controller-local','durable-request');
     for(const query of ['order=sideways','scope=unknown','order=desc&before=-1','order=desc&before=1.5','order=desc&after=1','order=asc&before=2','snapshot=-1','snapshot=NaN','order=desc&limit=0','order=desc&limit=1001','q='+ 'x'.repeat(501)]) {
-      const result=await f.call(prefix+'?'+query);assert.equal(result.status,400,query);
+      const result=await f.call(prefix+'?'+query);expect(result.status,query).toBe(400);
     }
-    for(const seq of ['0','-1','1.5','NaN'])assert.equal((await f.call(prefix+'/events/'+seq)).status,400);
-    const empty=await f.call(prefix+'?order=desc&snapshot=0');assert.equal(empty.status,200);assert.deepEqual(empty.data.data,[]);assert.equal(empty.data.next_cursor,null);
+    for(const seq of ['0','-1','1.5','NaN'])expect((await f.call(prefix+'/events/'+seq)).status).toBe(400);
+    const empty=await f.call(prefix+'?order=desc&snapshot=0');expect(empty.status).toBe(200);expect(empty.data.data).toStrictEqual([]);expect(empty.data.next_cursor).toBeNull();
     const before=f.server.store.events(world.id,0,1000);await f.close();f=await fixture(database);
-    assert.deepEqual((await f.call(prefix+'/events/'+record.seq)).data,record);assert.deepEqual(f.server.store.world(world.id),original);
-    assert.deepEqual(f.server.store.events(world.id,0,1000).slice(0,before.length),before);assert.equal(f.server.store.verify(world.id).valid,true);
+    expect((await f.call(prefix+'/events/'+record.seq)).data).toStrictEqual(record);expect(f.server.store.world(world.id)).toStrictEqual(original);
+    expect(f.server.store.events(world.id,0,1000).slice(0,before.length)).toStrictEqual(before);expect(f.server.store.verify(world.id).valid).toBe(true);
   } finally {await f.close();rmSync(directory,{recursive:true,force:true});}
 });

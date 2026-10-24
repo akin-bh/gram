@@ -1,9 +1,7 @@
-import {test} from 'bun:test';
-import assert from 'node:assert/strict';
+import {test,expect} from 'bun:test';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {randomUUID} from 'node:crypto';
 import {hash} from '../src/store.ts';
 import {start} from './integration-fixture.ts';
 
@@ -18,7 +16,7 @@ for(const phase of ['body','commit'] as const)for(const credential of ['oauth-re
       const grantId=isOAuth?store.get('access',tokenHash).grant:undefined;
       const initialGrant=isOAuth?store.get('grants',grantId):undefined;
       const actorId=isOAuth?`oauth:${initialGrant.client_id}`:`agent-world:${w.id}`;
-      const before=JSON.stringify(store.world(w.id)),key=`auth-${phase}-${credential}-${randomUUID()}`;
+      const before=JSON.stringify(store.world(w.id)),key=`auth-${phase}-${credential}-${crypto.randomUUID()}`;
       let scheduled=false,invalidated=false,requires=0;
       const invalidate=()=>{
         if(credential==='oauth-revoked')oauth.revokeToken('gusto',{token,client_id:initialGrant.client_id});
@@ -40,12 +38,12 @@ for(const phase of ['body','commit'] as const)for(const credential of ['oauth-re
       }
       const input={off_cycle:true,off_cycle_reason:'Adhoc',start_date:w.payrollTimeRecords[0].period_start,end_date:w.payrollTimeRecords[0].period_end,employee_uuids:w.employees.map((row:any)=>row.id),finance_world:{policy_id:w.payrollPolicies[0].id,time_record_ids:w.payrollTimeRecords.map((row:any)=>row.id)}};
       const response=await fetch(`${f.base}/providers/gusto/worlds/${w.id}/v1/companies/${w.id}/payrolls`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(input)}),payload=await response.json();
-      assert.equal(scheduled,true,'The requested asynchronous boundary must be exercised');assert.equal(invalidated,true,'Credential invalidation must finish before the response');
-      assert.equal(response.status,401,JSON.stringify(payload));assert.ok(['authentication_required','authentication_changed'].includes(payload.error.code));
-      const after=store.world(w.id);assert.equal(JSON.stringify(after),before,'Rejected authorization must preserve the entire canonical world');
-      assert.equal(after.payrollRuns.length,0);assert.deepEqual(after.bankTransactions,w.bankTransactions);assert.deepEqual(after.journals,w.journals);
-      const entry=store.db.prepare('SELECT value FROM idempotency WHERE world=? AND actor=? AND key=?').get(w.id,actorId,key);assert.equal(entry,null,'Failed authorization cannot cache a success or reserve the key');
-      assert.equal(store.events(w.id,0,1000).filter(row=>row.type==='action.completed').length,0);assert.equal(store.verify(w.id).valid,true);
+      expect(scheduled,'The requested asynchronous boundary must be exercised').toBe(true);expect(invalidated,'Credential invalidation must finish before the response').toBe(true);
+      expect(response.status,JSON.stringify(payload)).toBe(401);expect(['authentication_required','authentication_changed'].includes(payload.error.code)).toBeTruthy();
+      const after=store.world(w.id);expect(JSON.stringify(after),'Rejected authorization must preserve the entire canonical world').toBe(before);
+      expect(after.payrollRuns.length).toBe(0);expect(after.bankTransactions).toStrictEqual(w.bankTransactions);expect(after.journals).toStrictEqual(w.journals);
+      const entry=store.db.prepare('SELECT value FROM idempotency WHERE world=? AND actor=? AND key=?').get(w.id,actorId,key);expect(entry,'Failed authorization cannot cache a success or reserve the key').toBeNull();
+      expect(store.events(w.id,0,1000).filter(row=>row.type==='action.completed').length).toBe(0);expect(store.verify(w.id).valid).toBe(true);
     }finally{store.get=originalGet;oauth.require=originalRequire;await f.close();rmSync(folder,{recursive:true,force:true});}
   });
 }

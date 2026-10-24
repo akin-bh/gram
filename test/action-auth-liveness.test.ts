@@ -1,6 +1,4 @@
-import {test} from 'bun:test';
-import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {test,expect} from 'bun:test';
 import {hash} from '../src/store.ts';
 import {start} from './integration-fixture.ts';
 
@@ -24,10 +22,10 @@ async function rejectedAfterBody(credential:Credential,phase:Phase,mutation:Muta
       actorId=isOAuth?`oauth:${store.get('grants',credentialId).client_id}`:`agent-world:${world.id}`;
       headers={Authorization:`Bearer ${token}`};
     }
-    const originalCredential=store.get(namespace,credentialId),key=`auth-${randomUUID()}`;
+    const originalCredential=store.get(namespace,credentialId),key=`auth-${crypto.randomUUID()}`;
     if(mutation==='action'){
       const subscription=await f.call(`/api/worlds/${world.id}/webhooks`,{events:['payroll.*']});
-      assert.equal(subscription.status,201,JSON.stringify(subscription.data));
+      expect(subscription.status,JSON.stringify(subscription.data)).toBe(201);
     }
     const input=mutation==='action'?{type:'prepare_payroll',policy_id:world.payrollPolicies[0].id,time_record_ids:world.payrollTimeRecords.map((row:any)=>row.id),employee_ids:world.employees.map((row:any)=>row.id)}
       :mutation==='world-create'?{kind:'saas-collections',name:'Expired session must not create this world',orderCount:1}
@@ -61,30 +59,30 @@ async function rejectedAfterBody(credential:Credential,phase:Phase,mutation:Muta
     } as typeof store.get;
     const request=()=>fetch(f.base+path,{method:'POST',headers:{...headers,'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify(input)});
     const response=await request(),payload=await response.json();
-    assert.equal(scheduled,true,'The intended body-read authorization boundary must be exercised');
-    assert.equal(invalidated,true,'Invalidation must complete before the response');
-    assert.equal(response.status,401,JSON.stringify(payload));
-    assert.equal(payload.error.code,'authentication_required');
-    assert.equal(JSON.stringify(store.worlds()),beforeWorlds,'Expired/revoked credentials must not mutate any world');
-    assert.equal(JSON.stringify(store.all('clients')),beforeClients,'Rejected client registration must not persist a client');
-    assert.deepEqual(store.db.prepare('SELECT * FROM idempotency ORDER BY world,actor,key').all(),beforeIdempotency,'Failed authorization cannot cache a success or consume a key');
-    assert.deepEqual(store.db.prepare('SELECT * FROM webhook_deliveries ORDER BY seq').all(),beforeDeliveries,'Denied effects must not create webhook outbox work');
-    assert.deepEqual(store.db.prepare('SELECT * FROM webhook_events ORDER BY rowid').all(),beforeWebhookEvents,'Denied effects must not publish domain events');
+    expect(scheduled,'The intended body-read authorization boundary must be exercised').toBe(true);
+    expect(invalidated,'Invalidation must complete before the response').toBe(true);
+    expect(response.status,JSON.stringify(payload)).toBe(401);
+    expect(payload.error.code).toBe('authentication_required');
+    expect(JSON.stringify(store.worlds()),'Expired/revoked credentials must not mutate any world').toBe(beforeWorlds);
+    expect(JSON.stringify(store.all('clients')),'Rejected client registration must not persist a client').toBe(beforeClients);
+    expect(store.db.prepare('SELECT * FROM idempotency ORDER BY world,actor,key').all(),'Failed authorization cannot cache a success or consume a key').toStrictEqual(beforeIdempotency);
+    expect(store.db.prepare('SELECT * FROM webhook_deliveries ORDER BY seq').all(),'Denied effects must not create webhook outbox work').toStrictEqual(beforeDeliveries);
+    expect(store.db.prepare('SELECT * FROM webhook_events ORDER BY rowid').all(),'Denied effects must not publish domain events').toStrictEqual(beforeWebhookEvents);
     const newAudit=(store.db.prepare('SELECT value FROM audit WHERE seq>? ORDER BY seq').all(beforeAudit) as any[]).map(row=>JSON.parse(row.value));
-    assert.equal(newAudit.filter(event=>!['http.request','oauth.revoked'].includes(event.type)).length,0,'Only the denied HTTP request and explicit token revocation may be audited');
-    assert.equal(newAudit.filter(event=>event.type==='action.completed').length,0);
-    assert.equal(store.verify(world.id).valid,true);
-    assert.equal(store.verify('_service').valid,true);
+    expect(newAudit.filter(event=>!['http.request','oauth.revoked'].includes(event.type)).length,'Only the denied HTTP request and explicit token revocation may be audited').toBe(0);
+    expect(newAudit.filter(event=>event.type==='action.completed').length).toBe(0);
+    expect(store.verify(world.id).valid).toBe(true);
+    expect(store.verify('_service').valid).toBe(true);
 
     // Restore this isolated credential and repeat the exact key/body. Success
     // proves the rejected request did not reserve the key or conceal bad input.
     store.get=originalGet;store.put(namespace,credentialId,originalCredential);
     const retry=await request(),result=await retry.json();
-    assert.equal(retry.status,mutation==='action'?200:201,JSON.stringify(result));
+    expect(retry.status,JSON.stringify(result)).toBe(mutation==='action'?200:201);
     if(mutation==='action'){
-      assert.equal(store.world(world.id).payrollRuns.length,1);
-      assert.ok(store.db.prepare('SELECT value FROM idempotency WHERE world=? AND actor=? AND key=?').get(world.id,actorId,key));
-      assert.equal(store.events(world.id,0,1000).filter(event=>event.type==='action.completed').length,1);
+      expect(store.world(world.id).payrollRuns.length).toBe(1);
+      expect(store.db.prepare('SELECT value FROM idempotency WHERE world=? AND actor=? AND key=?').get(world.id,actorId,key)).toBeTruthy();
+      expect(store.events(world.id,0,1000).filter(event=>event.type==='action.completed').length).toBe(1);
     }
   }finally{store.get=originalGet;await f.close();}
 }
@@ -109,17 +107,17 @@ test('Zoho native authorization cannot be changed by repeated path separators',a
       const response=await fetch(f.base+path,{headers:{Authorization:`${scheme} ${token}`}});
       return {status:response.status,data:await response.json()};
     };
-    const wrong=await request(canonical,'Bearer');assert.equal(wrong.status,401);assert.equal(wrong.data.error.code,'authentication_required');
-    const valid=await request(canonical,'Zoho-oauthtoken');assert.equal(valid.status,200,JSON.stringify(valid.data));assert.deepEqual(valid.data.journals,[]);
+    const wrong=await request(canonical,'Bearer');expect(wrong.status).toBe(401);expect(wrong.data.error.code).toBe('authentication_required');
+    const valid=await request(canonical,'Zoho-oauthtoken');expect(valid.status,JSON.stringify(valid.data)).toBe(200);expect(valid.data.journals).toStrictEqual([]);
     // The first alias previously returned 200 with Bearer while the canonical
     // path required Zoho-oauthtoken. Every separator is rejected before auth.
     for(const alias of [canonical.replace('/providers/','/providers//'),canonical.replace('/worlds/','//worlds/'),canonical.replace(`/worlds/${world.id}`,`/worlds//${world.id}`),canonical.replace('/books/v3/','/books//v3/')]){
       for(const scheme of ['Bearer','Zoho-oauthtoken']){
-        const result=await request(alias,scheme);assert.equal(result.status,400,JSON.stringify(result.data));assert.equal(result.data.error.code,'invalid_path');
+        const result=await request(alias,scheme);expect(result.status,JSON.stringify(result.data)).toBe(400);expect(result.data.error.code).toBe('invalid_path');
       }
     }
-    assert.equal(JSON.stringify(f.server.store.world(world.id)),before);
-    assert.equal(f.server.store.events(world.id,0,1000).filter(event=>event.type==='action.completed').length,0);
-    assert.equal(f.server.store.verify(world.id).valid,true);
+    expect(JSON.stringify(f.server.store.world(world.id))).toBe(before);
+    expect(f.server.store.events(world.id,0,1000).filter(event=>event.type==='action.completed').length).toBe(0);
+    expect(f.server.store.verify(world.id).valid).toBe(true);
   }finally{await f.close();}
 });

@@ -1,5 +1,4 @@
 import {test,expect} from 'bun:test';
-import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -7,7 +6,7 @@ import {hash} from '../src/store.ts';
 import {foreignSettlementCashProof} from '../src/foreign-obligations.ts';
 import {start} from './integration-fixture.ts';
 const date='2026-10-24T09:00:00.000Z',sourceFacts={issued_at:'2026-10-21T09:00:00.000Z',due_at:'2026-10-30T09:00:00.000Z',service_completed_at:'2026-10-20T09:00:00.000Z',completion_reference:'accepted-service'};
-const okay=(response:any)=>{assert.equal(response.status,200,JSON.stringify(response.data));return response.data.result;};
+const okay=(response:any)=>{expect(response.status,JSON.stringify(response.data)).toBe(200);return response.data.result;};
 function blueprint(){return {version:1,opening_at:date,period_closed:true,
  bank_accounts:[{ref:'euro',name:'EUR',currency:'EUR'}],fx_quotes:[{ref:'original',base_currency:'EUR',quote_currency:'USD',numerator:'11',denominator:'10',observed_at:'2026-10-01T09:00:00.000Z',expires_at:'2026-10-30T09:00:00.000Z'},{ref:'closing',base_currency:'EUR',quote_currency:'USD',numerator:'12',denominator:'10',observed_at:date,expires_at:'2026-10-31T09:00:00.000Z'}],
  foreign_counterparties:[{ref:'client',kind:'customer',name:'Studio',email:'billing@studio.test',currency:'EUR'},{ref:'supplier',kind:'vendor',name:'Supply',email:'ap@supply.test',currency:'EUR'}],

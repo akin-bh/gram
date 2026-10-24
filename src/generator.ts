@@ -1,17 +1,14 @@
-import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {fileURLToPath} from 'node:url';
 import {z} from 'zod';
 import {generateScenario,loadAgentConfig,scenarioSchema,validateGeneratedScenario} from './agent.ts';
 import {createWorld,summarize} from './world.ts';
 import {sourceContextSchema,validateSourceContext} from './source-context.ts';
 import {BLUEPRINT_GENERATION_GUIDANCE} from './blueprint.ts';
 
-// This is the transport already used by the project's argon-client.py. Argon
-// runs on Vertex global, not a substituted Gemini Developer API model alias.
+// Argon runs on Vertex global, not a substituted Gemini Developer API model alias.
 const MODEL='gemini-4-argon';
 const HOST='https://aiplatform.googleapis.com';
-const ENV_FILE=fileURLToPath(new URL('../.env',import.meta.url));
+const ENV_FILE=Bun.fileURLToPath(new URL('../.env',import.meta.url));
 const MAX_RESPONSE_BYTES=4*1024*1024;
 const DEFAULT_TIMEOUT_MS=120000;
 const DEFAULT_TOTAL_TIMEOUT_MS=300000;
@@ -127,14 +124,14 @@ export async function generateArgon<T>(options:ArgonGenerationOptions<T>){
   const maxOutputTokens=integer(options.maxOutputTokens,16384,1024,32768,'maxOutputTokens'),timeoutMs=integer(options.timeoutMs,DEFAULT_TIMEOUT_MS,1,1200000,'timeoutMs'),totalTimeoutMs=integer(options.totalTimeoutMs,DEFAULT_TOTAL_TIMEOUT_MS,1,1200000,'totalTimeoutMs'),maxRetries=integer(options.maxRetries,2,0,2,'maxRetries');
   const outputMode=options.outputMode??'schema';
   if(!['schema','json'].includes(outputMode))throw new GeneratorError('invalid_generation_options','outputMode must be schema or json.',400);
-  const strictSchemaJson=JSON.stringify(z.toJSONSchema(options.schema,{target:'draft-7'})),outputMetadata={output_mode:outputMode,strict_schema_sha256:createHash('sha256').update(strictSchemaJson).digest('hex')};
+  const strictSchemaJson=JSON.stringify(z.toJSONSchema(options.schema,{target:'draft-7'})),outputMetadata={output_mode:outputMode,strict_schema_sha256:new Bun.CryptoHasher('sha256').update(strictSchemaJson).digest('hex')};
   const emit=async(event:Record<string,unknown>)=>options.onEvent?.(sanitizeGenerationEvent({...event,...outputMetadata},secrets));
   // Documented JSON mode avoids the remote grammar compiler for the complete
   // configuration graph. It does not guarantee schema-conforming output: the
   // same JSON parser, original strict Zod schema and engine remain mandatory.
   const systemPrompt=outputMode==='json'?`${options.systemPrompt}\n\nReturn one JSON object conforming to the complete JSON Schema below. Do not include Markdown fences or commentary. Optional properties may be omitted. The host rejects malformed JSON, unknown fields, invalid source graphs and unsupported values; JSON mode does not relax these requirements.\nJSON Schema:\n${strictSchemaJson}`:options.systemPrompt;
   const body={systemInstruction:{parts:[{text:systemPrompt}]},contents:[{role:'user',parts:[{text:options.prompt}]}],generationConfig:{maxOutputTokens,responseMimeType:'application/json',...(outputMode==='schema'?{responseSchema:argonResponseSchema(options.schema)}:{}),thinkingConfig:{thinkingLevel:'MEDIUM'}}};
-  const raw=JSON.stringify(body),requestHash=createHash('sha256').update(raw).digest('hex'),url=`${HOST}/v1/projects/${encodeURIComponent(project)}/locations/global/publishers/google/models/${MODEL}:generateContent`,started=Date.now(),deadline=linkedAbort(options.signal,totalTimeoutMs),attempts:any[]=[];
+  const raw=JSON.stringify(body),requestHash=new Bun.CryptoHasher('sha256').update(raw).digest('hex'),url=`${HOST}/v1/projects/${encodeURIComponent(project)}/locations/global/publishers/google/models/${MODEL}:generateContent`,started=Date.now(),deadline=linkedAbort(options.signal,totalTimeoutMs),attempts:any[]=[];
   let acceptedUsage:Record<string,unknown>|undefined;
   const assertActive=()=>{if(deadline.signal.aborted)throw new GeneratorError(options.signal?.aborted?'generation_cancelled':'generation_timeout','Generation ended before an accepted result.',409,{attempts,usage:acceptedUsage,...(acceptedUsage?argonUsageCost(acceptedUsage,config.pricing):{})});};
   try{
@@ -166,7 +163,7 @@ export async function generateArgon<T>(options:ArgonGenerationOptions<T>){
       if(!Array.isArray(parts)||parts.some(part=>!part.thought&&(part.functionCall||part.executableCode)))throw new GeneratorError('invalid_generation_response','Argon returned unsupported nontext output.',502,{usage:acceptedUsage,...cost});
       const visible=parts.filter(part=>!part.thought&&typeof part.text==='string').map(part=>part.text).join('');let candidateValue:unknown;
       try{candidateValue=sanitizeGenerationEvent(JSON.parse(visible),secrets);}catch{throw new GeneratorError('invalid_generated_bundle','Argon did not return a JSON source bundle.',502,{phase:'json',usage:acceptedUsage,...cost});}
-      const rejectCandidate=async(phase:string,details:unknown)=>{const retained=JSON.stringify(candidateValue),bytes=Buffer.byteLength(retained);await emit({type:'generation.provider.candidate_rejected',phase,details,candidate_bytes:bytes,candidate_sha256:createHash('sha256').update(retained).digest('hex'),...(bytes<=256*1024?{candidate:candidateValue}:{candidate_omitted:'Rejected candidate exceeds the 256 KiB audit limit.'})});assertActive();};
+      const rejectCandidate=async(phase:string,details:unknown)=>{const retained=JSON.stringify(candidateValue),bytes=Buffer.byteLength(retained);await emit({type:'generation.provider.candidate_rejected',phase,details,candidate_bytes:bytes,candidate_sha256:new Bun.CryptoHasher('sha256').update(retained).digest('hex'),...(bytes<=256*1024?{candidate:candidateValue}:{candidate_omitted:'Rejected candidate exceeds the 256 KiB audit limit.'})});assertActive();};
       const parsed=options.schema.safeParse(candidateValue);if(!parsed.success){await rejectCandidate('schema',{issues:parsed.error.issues});throw new GeneratorError('invalid_generated_bundle','Argon returned a draft outside the supported source schema.',502,{phase:'schema',issues:parsed.error.issues,usage:acceptedUsage,...cost});}
       let value:T;try{value=options.validate?options.validate(parsed.data):parsed.data;}catch(error){await rejectCandidate('domain',{code:(error as any)?.code??'invalid_bundle',message:error instanceof Error?error.message:String(error)});if(error instanceof GeneratorError)throw error;throw new GeneratorError('invalid_generated_bundle','The domain rejected the generated source bundle.',502,{phase:'domain',code:(error as any)?.code??'invalid_bundle',message:sanitizeGenerationEvent(error instanceof Error?error.message:String(error),secrets),usage:acceptedUsage,...cost});}
       assertActive();
@@ -211,7 +208,7 @@ export async function generateWorldDraft(prompt:string,options:{provider?:Genera
   const emit=async(event:Record<string,unknown>)=>options.onEvent?.(sanitizeGenerationEvent(event,secrets)),abort=linkedAbort(options.signal,600000);
   const assertActive=()=>{if(abort.signal.aborted)throw new GeneratorError(options.signal?.aborted?'generation_cancelled':'generation_timeout','Generation ended before an accepted draft.',409);};
   try{
-    assertActive();await emit({type:'scenario.generation.started',provider,model:MODEL,prompt_sha256:createHash('sha256').update(prompt).digest('hex'),prompt_chars:prompt.length,stages:2});assertActive();
+    assertActive();await emit({type:'scenario.generation.started',provider,model:MODEL,prompt_sha256:new Bun.CryptoHasher('sha256').update(prompt).digest('hex'),prompt_chars:prompt.length,stages:2});assertActive();
     const stageOptions={signal:abort.signal,transport:options.transport,sleep:options.sleep};
     const config=await generateArgon({...stageOptions,prompt,systemPrompt:configurationPrompt,outputMode:'json',schema:scenarioSchema.omit({sourceContext:true}),validate:validateGeneratedScenario,onEvent:event=>emit({...event,stage:'configuration'})});
     assertActive();const base=validateGeneratedScenario(config.value),grounded=createWorld(base,'generator-grounding-only');
@@ -231,7 +228,7 @@ export async function generateWorldDraft(prompt:string,options:{provider?:Genera
     const first=createWorld(scenario,'generator-output-check'),second=createWorld(scenario,'generator-portability-check');
     const portable=(world:Record<string,unknown>)=>JSON.stringify({...world,id:'portable-world'});
     if(portable(first)!==portable(second))throw new GeneratorError('nonportable_generated_scenario','Generated source records differ across independent world identities.',502);
-    const materialization={source_mode:scenario.blueprint?'blueprint':'preset',...(first.blueprintManifest?{blueprint_manifest:first.blueprintManifest}:{}),source_counts:Object.fromEntries(Object.entries(first).filter(([key,value])=>Array.isArray(value)&&!['generationHistory','externalEvents'].includes(key)).map(([key,value])=>[key,(value as any[]).length])),canonical_state_sha256:createHash('sha256').update(portable(first)).digest('hex')};
+    const materialization={source_mode:scenario.blueprint?'blueprint':'preset',...(first.blueprintManifest?{blueprint_manifest:first.blueprintManifest}:{}),source_counts:Object.fromEntries(Object.entries(first).filter(([key,value])=>Array.isArray(value)&&!['generationHistory','externalEvents'].includes(key)).map(([key,value])=>[key,(value as any[]).length])),canonical_state_sha256:new Bun.CryptoHasher('sha256').update(portable(first)).digest('hex')};
     const raw_usage={configuration:config.usage,source_context:context.usage},usage:Record<string,number>={};
     for(const key of ['promptTokenCount','cachedContentTokenCount','candidatesTokenCount','thoughtsTokenCount','totalTokenCount'])for(const stage of Object.values(raw_usage))if(typeof stage[key]==='number')usage[key]=(usage[key]??0)+(stage[key] as number);
     const cost_usd=config.cost_usd===null||context.cost_usd===null?null:config.cost_usd+context.cost_usd;

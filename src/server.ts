@@ -1,7 +1,5 @@
-import { readFileSync, mkdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineEmulator, createEmulator } from 'emulate';
 import { Store, ServiceError, hash, secret, redact } from './store.ts';
 import { OAuth } from './oauth.ts';
@@ -17,7 +15,7 @@ import { Webhooks } from './webhooks.ts';
 import { MAIL_LIMITS } from './mail.ts';
 import {buildAgentContextOverview,buildAgentProviderContext} from './agent-context.ts';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const root = resolve(import.meta.dir, '..');
 const json = (data: any, status = 200, headers: Record<string, string> = {}) => Response.json(data, { status, headers });
 const controllerActions = new Set(['rename_company', 'cancel_event', 'advance_time', 'advance_to', 'set_fault', 'close_period', 'reopen_period', 'decide_approval', 'receive_email', ...Object.entries(actionRequirements).filter(([, requirement]) => requirement.role === 'controller' && !('internal' in requirement && requirement.internal)).map(([type]) => type)]);
 const providers: Record<string, string> = { refund: 'stripe', pay_bill: 'mercury', collect_invoice: 'stripe', post_journal: 'netsuite', send_email: 'gmail', ...Object.fromEntries(Object.entries(actionRequirements).filter(([, requirement]) => requirement.role === 'operator' && !('internal' in requirement && requirement.internal)).map(([type, requirement]) => [type, requirement.system])) };
@@ -132,7 +130,7 @@ export async function createService(options: ServiceOptions = {}) {
         const session = secret(); store.put('sessions', hash(session), { actor: 'controller-local', expires_at: Date.now() + 86400_000 });
         headers['Set-Cookie'] = `${sessionCookie}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`;
       }
-      return new Response(readFileSync(resolve(root, 'web', ...(path === '/' ? [file] : ['dist', file]))), { headers });
+      return new Response(Bun.file(resolve(root, 'web', ...(path === '/' ? [file] : ['dist', file]))), { headers });
     }
     if (path === '/oauth/callback' && method === 'GET') {
       requireController(actor);
@@ -144,7 +142,7 @@ export async function createService(options: ServiceOptions = {}) {
       if (route === 'consent' && method === 'GET') { requireController(actor); return json(oauth.consent(system, url.searchParams)); }
       if (route === 'authorize') {
         requireController(actor);
-        if (method === 'GET') return new Response(oauth.consentPage(system, url.searchParams), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        if (method === 'GET') return new Response(await oauth.consentPage(system, url.searchParams), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
         if (method === 'POST'){const input=await body(request),authorized=currentActor(request,actor);requireController(authorized);return Response.redirect(oauth.authorize(system,new URLSearchParams(input),authorized),303);}
       }
       if (route === 'token' && method === 'POST') return json(oauth.token(system, await body(request)));
@@ -157,7 +155,7 @@ export async function createService(options: ServiceOptions = {}) {
     if (path === '/api/oauth/clients' && method === 'POST') { requireController(actor);const input=await body(request),authorized=currentActor(request,actor);requireController(authorized);return json(oauth.register(input),201); }
     if (path === '/api/worlds' && method === 'POST') {
       requireController(actor); const input = await body(request);actor=currentActor(request,actor);requireController(actor);
-      const world = createWorld(input, 'world-' + randomUUID()),creator=actor.id;
+      const world = createWorld(input, 'world-' + crypto.randomUUID()),creator=actor.id;
       store.transaction(() => { store.save(world); store.audit(world.id, 'world.created', { scenario: input, summary: summarize(world) }, creator, requestId); });
       return json(snapshot(world.id), 201);
     }
@@ -276,7 +274,7 @@ export async function createService(options: ServiceOptions = {}) {
         const input = await body(request);actor=currentActor(request,actor);requireController(actor);const instruction = input.instruction ?? 'Investigate the current scenario, carry out authorized financial work through the connected systems, and report remaining blockers with evidence.';
         if (typeof instruction !== 'string' || instruction.length > 12000 || instruction.length < 5) throw new ServiceError(400, 'invalid_instruction');
         if (store.all('runs').some(r => r.world === id && r.status === 'running')) throw new ServiceError(409, 'agent_already_running');
-        const runId = randomUUID(), token = secret(), tokenHash = hash(token), startedAt = new Date().toISOString(), run = { id: runId, world: id, status: 'running', instruction, model: config().model, started_at: startedAt, output: '', progress: compactRunProgress({ type: 'agent.started' }, startedAt) };
+        const runId = crypto.randomUUID(), token = secret(), tokenHash = hash(token), startedAt = new Date().toISOString(), run = { id: runId, world: id, status: 'running', instruction, model: config().model, started_at: startedAt, output: '', progress: compactRunProgress({ type: 'agent.started' }, startedAt) };
         store.put('agent-tokens', tokenHash, { world: id, actor: `agent-world:${id}`, runId, expires_at: Date.now() + 900_000 });
         store.put('runs', runId, run); store.audit(id, 'agent.started', { run_id: runId, instruction, model: run.model }, actor.id, requestId);
         const abort = new AbortController();
@@ -360,7 +358,7 @@ export async function createService(options: ServiceOptions = {}) {
     throw new ServiceError(404, 'not_found');
   }
   async function handler(request: Request): Promise<Response> {
-    const requestId = randomUUID(), started = performance.now(), url = new URL(request.url);
+    const requestId = crypto.randomUUID(), started = performance.now(), url = new URL(request.url);
     let actor: Actor | undefined, response: Response, requestBody: any, world = url.pathname.match(/\/(?:worlds|receivers)\/([^/]+)/)?.[1] ?? '_service';
     try {
       if (url.origin !== baseUrl || (request.headers.get('host') && request.headers.get('host') !== new URL(baseUrl).host)) throw new ServiceError(403, 'invalid_host');
@@ -421,7 +419,7 @@ export async function startServer(options: ServiceOptions & { port?: number } = 
     await server.stop(true); await service.close();
   } };
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   mkdirSync(resolve(root, 'data'), { recursive: true, mode: 0o700 });
   const webhookPorts = process.env.FINANCE_WORLD_WEBHOOK_PORTS?.split(',').map(p => Number(p.trim()));
   const service = await startServer({ database: process.env.FINANCE_WORLD_DB, webhookPorts });

@@ -1,5 +1,4 @@
 import PostalMime, { addressParser, decodeWords } from 'postal-mime';
-import { createHash } from 'node:crypto';
 
 /** Bounded synthetic mail, never an SMTP transport or an HTML rendering surface. */
 export const MAIL_LIMITS = Object.freeze({
@@ -19,7 +18,7 @@ export class MailError extends Error {
   constructor(code: string, message: string, status = 400) { super(message); this.name = 'MailError'; this.code = code; this.status = status; }
 }
 function fail(code: string, message: string, status = 400): never { throw new MailError(code, message, status); }
-const digest = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
+const digest = (data: string | Buffer) => new Bun.CryptoHasher('sha256').update(data).digest('hex');
 const b64 = (data: string | Buffer) => Buffer.from(data).toString('base64url');
 const control = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const singletons = new Set(['from','sender','to','cc','bcc','reply-to','subject','date','message-id','in-reply-to','references','mime-version','content-type','content-disposition','content-transfer-encoding','content-id']);

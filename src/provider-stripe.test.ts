@@ -1,5 +1,4 @@
-import {test} from 'bun:test';
-import assert from 'node:assert/strict';
+import {test,expect} from 'bun:test';
 import {createWorld,applyAction,DomainError} from './world.ts';
 import type {World,Action,Actor} from './world.ts';
 import {providerRequest} from './provider-adapters.ts';
@@ -20,66 +19,66 @@ function fixture(){
 }
 async function call(w:World,path:string,method='GET',input?:any){const url=new URL(path,'http://local.test');return providerRequest({system:'stripe',world:w,route:url.pathname,url,method,input,execute:a=>applyAction(w,a,operator).result});}
 async function body(w:World,path:string){return (await call(w,path))!.body;}
-async function rejects(w:World,path:string,code:string){const before=structuredClone(w);await assert.rejects(()=>call(w,path),(error:any)=>error instanceof DomainError&&error.code===code);assert.deepEqual(w,before);}
+async function rejects(w:World,path:string,code:string){const before=structuredClone(w);await expect(call(w,path)).rejects.toThrowSatisfying((error:any)=>error instanceof DomainError&&error.code===code);expect(w).toStrictEqual(before);}
 
 test('six source-backed native read contracts expose official docs and no payout/top-up write',async()=>{
- assert.equal(providerStripeRoutes.length,6);for(const route of providerStripeRoutes){assert.equal(route.access,'read');assert.ok(route.documentation.every(url=>url.startsWith('https://docs.stripe.com/api/')));assert.ok(providerContracts.some(r=>r.id===route.id));assert.equal(resolveProviderOperation(route.id,'one',route.path.includes(':id')?{id:'source-id'}:{}).contract.method,'GET');}
- const {w}=fixture();for(const resource of ['payouts','topups','balance_transactions'])assert.equal(await call(w,'/v1/'+resource,'POST',{amount:100}),undefined);
+ expect(providerStripeRoutes.length).toBe(6);for(const route of providerStripeRoutes){expect(route.access).toBe('read');expect(route.documentation.every(url=>url.startsWith('https://docs.stripe.com/api/'))).toBeTruthy();expect(providerContracts.some(r=>r.id===route.id)).toBeTruthy();expect(resolveProviderOperation(route.id,'one',route.path.includes(':id')?{id:'source-id'}:{}).contract.method).toBe('GET');}
+ const {w}=fixture();for(const resource of ['payouts','topups','balance_transactions'])expect(await call(w,'/v1/'+resource,'POST',{amount:100})).toBeUndefined();
 });
 
 test('legacy voided intent timestamp is immutable and reads invent no processor rows',async()=>{
  const w=createWorld({kind:'ticket-cancellation',orderCount:18,cancelEvent:false}),p=w.payments.find(p=>p.status==='voided'),order=w.orders.find(o=>o.id===p.order_id),before=structuredClone(w);
- const first=await body(w,'/v1/payment_intents/'+p.id);assert.equal(first.created,epoch(order.created_at));assert.equal(first.latest_charge,null);assert.equal(first.amount_received,0);assert.deepEqual(w,before);
- applyAction(w,{type:'advance_time',hours:2},controller);const advanced=structuredClone(w);assert.deepEqual(await body(w,'/v1/payment_intents/'+p.id),first);
- for(const resource of ['balance_transactions','payouts','topups'])assert.deepEqual((await body(w,'/v1/'+resource)).data,[]);
- const balance=await body(w,'/v1/balance');assert.equal(balance.available[0].amount,0);assert.equal(balance.pending[0].amount,0);assert.equal(balance.finance_world.reserved_minor,0);assert.equal(w.processorTransactions,undefined);assert.deepEqual(w,advanced);
- assert.equal((await body(w,'/v1/charges/ch_'+w.payments[0].id)).balance_transaction,null);
+ const first=await body(w,'/v1/payment_intents/'+p.id);expect(first.created).toBe(epoch(order.created_at));expect(first.latest_charge).toBeNull();expect(first.amount_received).toBe(0);expect(w).toStrictEqual(before);
+ applyAction(w,{type:'advance_time',hours:2},controller);const advanced=structuredClone(w);expect(await body(w,'/v1/payment_intents/'+p.id)).toStrictEqual(first);
+ for(const resource of ['balance_transactions','payouts','topups'])expect((await body(w,'/v1/'+resource)).data).toStrictEqual([]);
+ const balance=await body(w,'/v1/balance');expect(balance.available[0].amount).toBe(0);expect(balance.pending[0].amount).toBe(0);expect(balance.finance_world.reserved_minor).toBe(0);expect(w.processorTransactions).toBeUndefined();expect(w).toStrictEqual(advanced);
+ expect((await body(w,'/v1/charges/ch_'+w.payments[0].id)).balance_transaction).toBeNull();
 });
 
 test('capture fee, future availability and native identity remain truthful while GL is offline',async()=>{
  const f=fixture(),{w}=f;f.act({type:'set_fault',system:'ledger',mode:'offline'});const availableAt='2026-10-24T10:00:00.000Z',p=f.payment({availableAt}),before=structuredClone(w);
  const intent=await body(w,'/v1/payment_intents/'+p.id),charge=await body(w,'/v1/charges/'+p.charge_id),txn=await body(w,'/v1/balance_transactions/'+p.processor_transaction_id),balance=await body(w,'/v1/balance');
- assert.equal(intent.latest_charge,p.charge_id);assert.equal(charge.id,p.charge_id);assert.equal(charge.balance_transaction,txn.id);assert.equal(txn.source,p.charge_id);assert.equal(txn.amount,12400);assert.equal(txn.fee,1000);assert.equal(txn.net,11400);assert.equal(txn.status,'pending');assert.equal(txn.available_on,epoch(availableAt));assert.equal(txn.finance_world.receipt_id,p.receipt_id);assert.equal(balance.pending[0].amount,11400);assert.equal(balance.available[0].amount,0);assert.equal(w.accounts.find(a=>a.id==='cash-processor').balance_minor,0);assert.equal(w.bankTransactions.length,1);assert.deepEqual(w,before);
- f.act({type:'advance_time',hours:1});assert.equal((await body(w,'/v1/balance')).available[0].amount,11400);assert.equal((await body(w,'/v1/balance')).pending[0].amount,0);assert.equal((await body(w,'/v1/balance_transactions/'+txn.id)).status,'available');assert.equal((await body(w,'/v1/payment_intents/'+p.id)).created,intent.created);
- f.act({type:'set_fault',system:'ledger',mode:'healthy'});f.act({type:'advance_time',hours:1});assert.equal(w.accounts.find(a=>a.id==='cash-processor').balance_minor,11400);assert.equal(w.operations.find(o=>o.id===p.operation_id).journal_id!==undefined,true);assert.equal((await body(w,'/v1/balance_transactions/'+txn.id)).created,txn.created);
+ expect(intent.latest_charge).toBe(p.charge_id);expect(charge.id).toBe(p.charge_id);expect(charge.balance_transaction).toBe(txn.id);expect(txn.source).toBe(p.charge_id);expect(txn.amount).toBe(12400);expect(txn.fee).toBe(1000);expect(txn.net).toBe(11400);expect(txn.status).toBe('pending');expect(txn.available_on).toBe(epoch(availableAt));expect(txn.finance_world.receipt_id).toBe(p.receipt_id);expect(balance.pending[0].amount).toBe(11400);expect(balance.available[0].amount).toBe(0);expect(w.accounts.find(a=>a.id==='cash-processor').balance_minor).toBe(0);expect(w.bankTransactions.length).toBe(1);expect(w).toStrictEqual(before);
+ f.act({type:'advance_time',hours:1});expect((await body(w,'/v1/balance')).available[0].amount).toBe(11400);expect((await body(w,'/v1/balance')).pending[0].amount).toBe(0);expect((await body(w,'/v1/balance_transactions/'+txn.id)).status).toBe('available');expect((await body(w,'/v1/payment_intents/'+p.id)).created).toBe(intent.created);
+ f.act({type:'set_fault',system:'ledger',mode:'healthy'});f.act({type:'advance_time',hours:1});expect(w.accounts.find(a=>a.id==='cash-processor').balance_minor).toBe(11400);expect(w.operations.find(o=>o.id===p.operation_id).journal_id!==undefined).toBe(true);expect((await body(w,'/v1/balance_transactions/'+txn.id)).created).toBe(txn.created);
 });
 
 test('recorded payout and top-up project actual paired receipts without revenue or forecast invention',async()=>{
  const f=fixture(),{w}=f;f.payment();f.act({type:'set_fault',system:'ledger',mode:'offline'});const payout=f.payout(4000),topup=f.topup(700),bank=structuredClone(w.bankTransactions);
  const p=await body(w,'/v1/payouts/'+payout.payout.id),t=await body(w,'/v1/topups/'+topup.topup.id),debit=await body(w,'/v1/balance_transactions/'+p.balance_transaction),credit=await body(w,'/v1/balance_transactions/'+t.balance_transaction);
- assert.equal(p.status,'paid');assert.equal(p.destination,'cash-bank');assert.equal(p.arrival_date,epoch(payout.payout.paid_at));assert.equal(p.finance_world.bank_transaction_id,payout.bank_transaction.id);assert.equal(p.automatic,undefined);assert.equal(p.method,undefined);assert.equal(debit.type,'payout');assert.equal(debit.source,p.id);assert.equal(debit.amount,-4000);assert.equal(debit.fee,0);
- assert.equal(t.status,'succeeded');assert.equal(t.source,null);assert.equal(t.finance_world.source_account_id,'cash-bank');assert.equal(t.finance_world.receipt_id,topup.operation.receipt_id);assert.equal(credit.type,'topup');assert.equal(credit.source,t.id);assert.equal(credit.net,700);assert.equal((await body(w,'/v1/balance')).available[0].amount,8100);assert.equal(w.accounts.find(a=>a.id==='cash-processor').balance_minor,11400);
- f.act({type:'set_fault',system:'ledger',mode:'healthy'});f.act({type:'advance_time',hours:1});assert.equal(w.accounts.find(a=>a.id==='cash-processor').balance_minor,8100);assert.equal(w.accounts.find(a=>a.id==='revenue').balance_minor,-1500);assert.deepEqual(w.bankTransactions,bank);assert.deepEqual(await body(w,'/v1/payouts/'+p.id),p);assert.deepEqual(await body(w,'/v1/topups/'+t.id),t);
+ expect(p.status).toBe('paid');expect(p.destination).toBe('cash-bank');expect(p.arrival_date).toBe(epoch(payout.payout.paid_at));expect(p.finance_world.bank_transaction_id).toBe(payout.bank_transaction.id);expect(p.automatic).toBeUndefined();expect(p.method).toBeUndefined();expect(debit.type).toBe('payout');expect(debit.source).toBe(p.id);expect(debit.amount).toBe(-4000);expect(debit.fee).toBe(0);
+ expect(t.status).toBe('succeeded');expect(t.source).toBeNull();expect(t.finance_world.source_account_id).toBe('cash-bank');expect(t.finance_world.receipt_id).toBe(topup.operation.receipt_id);expect(credit.type).toBe('topup');expect(credit.source).toBe(t.id);expect(credit.net).toBe(700);expect((await body(w,'/v1/balance')).available[0].amount).toBe(8100);expect(w.accounts.find(a=>a.id==='cash-processor').balance_minor).toBe(11400);
+ f.act({type:'set_fault',system:'ledger',mode:'healthy'});f.act({type:'advance_time',hours:1});expect(w.accounts.find(a=>a.id==='cash-processor').balance_minor).toBe(8100);expect(w.accounts.find(a=>a.id==='revenue').balance_minor).toBe(-1500);expect(w.bankTransactions).toStrictEqual(bank);expect(await body(w,'/v1/payouts/'+p.id)).toStrictEqual(p);expect(await body(w,'/v1/topups/'+t.id)).toStrictEqual(t);
 });
 
 test('native refund uses actual charge, discloses reservations separately and links only settled processor movement',async()=>{
  const f=fixture(),{w}=f,p=f.payment();f.cancel();const bank=structuredClone(w.bankTransactions),pending=(await call(w,'/v1/refunds','POST',{charge:p.charge_id,amount:1000}))!.body;
- assert.equal(pending.charge,p.charge_id);assert.equal(pending.balance_transaction,null);const balance=await body(w,'/v1/balance');assert.equal(balance.available[0].amount,11400);assert.equal(balance.finance_world.reserved_minor,1000);assert.equal(balance.finance_world.spendable_minor,10400);assert.equal((await body(w,'/v1/balance_transactions?type=refund')).data.length,0);
- await assert.rejects(()=>call(w,'/v1/refunds','POST',{charge:'ch_'+p.id,amount:1}),(error:any)=>error.code==='resource_missing');
+ expect(pending.charge).toBe(p.charge_id);expect(pending.balance_transaction).toBeNull();const balance=await body(w,'/v1/balance');expect(balance.available[0].amount).toBe(11400);expect(balance.finance_world.reserved_minor).toBe(1000);expect(balance.finance_world.spendable_minor).toBe(10400);expect((await body(w,'/v1/balance_transactions?type=refund')).data.length).toBe(0);
+ await expect(call(w,'/v1/refunds','POST',{charge:'ch_'+p.id,amount:1})).rejects.toThrowSatisfying((error:any)=>error.code==='resource_missing');
  f.act({type:'set_fault',system:'ledger',mode:'offline'});f.act({type:'advance_time',hours:1});const refund=await body(w,'/v1/refunds/'+pending.id),charge=await body(w,'/v1/charges/'+p.charge_id),txn=await body(w,'/v1/balance_transactions/'+refund.balance_transaction);
- assert.equal(refund.status,'succeeded');assert.equal(refund.charge,p.charge_id);assert.equal(charge.refunds.data[0].balance_transaction,txn.id);assert.equal(charge.amount_refunded,1000);assert.equal(txn.source,refund.id);assert.equal(txn.amount,-1000);assert.equal(txn.net,-1000);assert.equal(txn.fee,0);assert.equal((await body(w,'/v1/balance')).available[0].amount,10400);assert.equal((await body(w,'/v1/balance')).finance_world.reserved_minor,0);assert.deepEqual(w.bankTransactions,bank);assert.equal(w.accounts.find(a=>a.id==='cash-processor').balance_minor,11400);
+ expect(refund.status).toBe('succeeded');expect(refund.charge).toBe(p.charge_id);expect(charge.refunds.data[0].balance_transaction).toBe(txn.id);expect(charge.amount_refunded).toBe(1000);expect(txn.source).toBe(refund.id);expect(txn.amount).toBe(-1000);expect(txn.net).toBe(-1000);expect(txn.fee).toBe(0);expect((await body(w,'/v1/balance')).available[0].amount).toBe(10400);expect((await body(w,'/v1/balance')).finance_world.reserved_minor).toBe(0);expect(w.bankTransactions).toStrictEqual(bank);expect(w.accounts.find(a=>a.id==='cash-processor').balance_minor).toBe(11400);
 });
 
 test('processor dispute hold/release are signed adjustment sources with accurate reporting categories',async()=>{
  const f=fixture(),{w}=f,p=f.payment(),bank=structuredClone(w.bankTransactions),opened=f.act({type:'open_dispute',payment_id:p.id,amount_minor:500,reason:'fraudulent',external_event_id:'issuer-case-one'}),id=opened.dispute.id;
- assert.equal((await body(w,'/v1/disputes/'+id)).charge,p.charge_id);assert.equal((await body(w,'/v1/balance')).available[0].amount,10900);f.act({type:'submit_dispute_evidence',dispute_id:id,document_ids:[f.event.document_id],statement:'Read the signed admission agreement'},operator);f.act({type:'resolve_dispute',dispute_id:id,outcome:'won',external_event_id:'issuer-case-one-won'});
- const rows=(await body(w,'/v1/balance_transactions?type=adjustment&source='+id)).data;assert.equal(rows.length,2);assert.deepEqual(rows.map((r:any)=>[r.type,r.reporting_category,r.net]),[['adjustment','dispute_reversal',500],['adjustment','dispute',-500]]);assert.equal((await body(w,'/v1/balance')).available[0].amount,11400);assert.deepEqual(w.bankTransactions,bank);
+ expect((await body(w,'/v1/disputes/'+id)).charge).toBe(p.charge_id);expect((await body(w,'/v1/balance')).available[0].amount).toBe(10900);f.act({type:'submit_dispute_evidence',dispute_id:id,document_ids:[f.event.document_id],statement:'Read the signed admission agreement'},operator);f.act({type:'resolve_dispute',dispute_id:id,outcome:'won',external_event_id:'issuer-case-one-won'});
+ const rows=(await body(w,'/v1/balance_transactions?type=adjustment&source='+id)).data;expect(rows.length).toBe(2);expect(rows.map((r:any)=>[r.type,r.reporting_category,r.net])).toStrictEqual([['adjustment','dispute_reversal',500],['adjustment','dispute',-500]]);expect((await body(w,'/v1/balance')).available[0].amount).toBe(11400);expect(w.bankTransactions).toStrictEqual(bank);
 });
 
 test('newest-first cursor pages preserve ties, reverse traversal and filtered source boundaries',async()=>{
  const f=fixture(),{w}=f;for(let i=1;i<=7;i++)f.topup(i*100);const expected=w.processorTopups.map((r:any)=>r.id).reverse();
  const first=await body(w,'/v1/topups?limit=3'),second=await body(w,'/v1/topups?limit=3&starting_after='+first.data.at(-1).id),last=await body(w,'/v1/topups?limit=3&starting_after='+second.data.at(-1).id);
- assert.deepEqual([...first.data,...second.data,...last.data].map(r=>r.id),expected);assert.equal(first.has_more,true);assert.equal(last.has_more,false);
- const previous=await body(w,'/v1/topups?limit=3&ending_before='+second.data[0].id);assert.deepEqual(previous.data,first.data);assert.equal(previous.has_more,false);
- const near=await body(w,'/v1/topups?limit=2&ending_before='+last.data[0].id);assert.deepEqual(near.data.map((r:any)=>r.id),expected.slice(4,6));assert.equal(near.has_more,true);
- const filtered=await body(w,'/v1/topups?amount[gte]=300&amount[lt]=600');assert.deepEqual(filtered.data.map((r:any)=>r.amount),[500,400,300]);assert.equal((await body(w,'/v1/topups?amount=400')).data.length,1);assert.deepEqual((await body(w,'/v1/topups?status=failed')).data,[]);
- await rejects(w,'/v1/topups?amount=400&starting_after='+expected[0],'invalid_cursor');assert.deepEqual((await body(w,'/v1/topups?ending_before='+expected[0])).data,[]);
+ expect([...first.data,...second.data,...last.data].map(r=>r.id)).toStrictEqual(expected);expect(first.has_more).toBe(true);expect(last.has_more).toBe(false);
+ const previous=await body(w,'/v1/topups?limit=3&ending_before='+second.data[0].id);expect(previous.data).toStrictEqual(first.data);expect(previous.has_more).toBe(false);
+ const near=await body(w,'/v1/topups?limit=2&ending_before='+last.data[0].id);expect(near.data.map((r:any)=>r.id)).toStrictEqual(expected.slice(4,6));expect(near.has_more).toBe(true);
+ const filtered=await body(w,'/v1/topups?amount[gte]=300&amount[lt]=600');expect(filtered.data.map((r:any)=>r.amount)).toStrictEqual([500,400,300]);expect((await body(w,'/v1/topups?amount=400')).data.length).toBe(1);expect((await body(w,'/v1/topups?status=failed')).data).toStrictEqual([]);
+ await rejects(w,'/v1/topups?amount=400&starting_after='+expected[0],'invalid_cursor');expect((await body(w,'/v1/topups?ending_before='+expected[0])).data).toStrictEqual([]);
 });
 
 test('documented time/source/destination filters are exact before pagination',async()=>{
  const f=fixture(),{w}=f,p=f.payment(),at=epoch(w.now);f.payout(1000);f.act({type:'advance_time',hours:1});const later=f.payout(2000).payout;
- assert.deepEqual((await body(w,'/v1/payouts?created='+at)).data.map((r:any)=>r.amount),[1000]);assert.deepEqual((await body(w,'/v1/payouts?arrival_date[gt]='+at+'&destination=cash-bank&status=paid')).data.map((r:any)=>r.id),[later.id]);assert.deepEqual((await body(w,'/v1/payouts?destination=other-source')).data,[]);
- const charge=(await body(w,'/v1/balance_transactions?currency=usd&type=charge&source='+p.charge_id+'&created[lte]='+at)).data;assert.equal(charge.length,1);assert.equal(charge[0].id,p.processor_transaction_id);assert.deepEqual((await body(w,'/v1/balance_transactions?created[gt]='+at+'&created[lt]='+at)).data,[]);
+ expect((await body(w,'/v1/payouts?created='+at)).data.map((r:any)=>r.amount)).toStrictEqual([1000]);expect((await body(w,'/v1/payouts?arrival_date[gt]='+at+'&destination=cash-bank&status=paid')).data.map((r:any)=>r.id)).toStrictEqual([later.id]);expect((await body(w,'/v1/payouts?destination=other-source')).data).toStrictEqual([]);
+ const charge=(await body(w,'/v1/balance_transactions?currency=usd&type=charge&source='+p.charge_id+'&created[lte]='+at)).data;expect(charge.length).toBe(1);expect(charge[0].id).toBe(p.processor_transaction_id);expect((await body(w,'/v1/balance_transactions?created[gt]='+at+'&created[lt]='+at)).data).toStrictEqual([]);
 });
 
 test('invalid and unsupported filters reject atomically even on empty collections',async()=>{
@@ -93,5 +92,5 @@ test('invalid and unsupported filters reject atomically even on empty collection
 });
 
 test('new void source has a stable native creation time but no charge or balance transaction',async()=>{
- const f=fixture(),{w}=f,p=f.payment({voided:true}),before=structuredClone(w),native=await body(w,'/v1/payment_intents/'+p.id);assert.equal(native.created,epoch(p.created_at));assert.equal(native.status,'canceled');assert.equal(native.latest_charge,null);assert.equal(native.amount_received,0);assert.deepEqual((await body(w,'/v1/charges')).data,[]);assert.deepEqual((await body(w,'/v1/balance_transactions')).data,[]);assert.equal(w.operations.length,0);assert.deepEqual(w,before);f.act({type:'advance_time',hours:1});assert.deepEqual(await body(w,'/v1/payment_intents/'+p.id),native);
+ const f=fixture(),{w}=f,p=f.payment({voided:true}),before=structuredClone(w),native=await body(w,'/v1/payment_intents/'+p.id);expect(native.created).toBe(epoch(p.created_at));expect(native.status).toBe('canceled');expect(native.latest_charge).toBeNull();expect(native.amount_received).toBe(0);expect((await body(w,'/v1/charges')).data).toStrictEqual([]);expect((await body(w,'/v1/balance_transactions')).data).toStrictEqual([]);expect(w.operations.length).toBe(0);expect(w).toStrictEqual(before);f.act({type:'advance_time',hours:1});expect(await body(w,'/v1/payment_intents/'+p.id)).toStrictEqual(native);
 });

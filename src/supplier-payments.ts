@@ -1,7 +1,6 @@
 /** Controller-observed supplier route succession and terminal bank outcomes.
  * Original commercial sources and accepted payment routes remain immutable;
  * a successor never retargets an already accepted payment. */
-import {createHash} from 'node:crypto';
 import type {World,Action,Actor} from './world.ts';
 
 export const supplierPaymentRequirements={
@@ -20,7 +19,7 @@ export type SupplierPaymentHooks={
 export type SupplierPaymentBinding={beneficiary_id:string;route_source_id:string|null;route_source_fingerprint:string;requires_independent_approval:boolean};
 export type SupplierRouteHoldSource={kind:'return'|'rejection';source_id:string;reason:string};
 const canonical=(value:any):string=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
-const fingerprint=(value:any)=>createHash('sha256').update(canonical(value)).digest('hex');
+const fingerprint=(value:any)=>new Bun.CryptoHasher('sha256').update(canonical(value)).digest('hex');
 function text(value:any,label:string,h:SupplierPaymentHooks,max=200){
   if(typeof value!=='string'||!value.trim()||value!==value.trim()||value.length>max||/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value))h.fail('invalid_supplier_payment_field',`${label} must be nonempty text without surrounding whitespace or control characters`,400);
   return value as string;

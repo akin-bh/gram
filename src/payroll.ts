@@ -5,7 +5,6 @@
 import {statutoryPayrollAction,statutoryPayrollCollections,statutoryPayrollRequirements,normalizeStatutoryPayroll,statutoryCalculation,statutoryExecutionCheck,statutorySettlementBlock} from './statutory-payroll.ts';
 import type {Action,Actor,World} from './world.ts';
 import type {ProcurementHooks} from './procurement.ts';
-import {createHash} from 'node:crypto';
 
 export type PayrollControls={missingTime?:boolean;disabledRoute?:boolean;employeeWithholdingBps?:number;employerTaxBps?:number;periodClosed?:boolean};
 export const payrollCollections:Record<string,string>={...statutoryPayrollCollections,'employee':'employees','payroll-policy':'payrollPolicies','payroll-time':'payrollTimeRecords','payroll-run':'payrollRuns','payroll-tax-remittance':'payrollTaxRemittances','payslip':'payslips'};
@@ -31,10 +30,10 @@ function date(value:any,label:string,h:PayrollHooks){if(typeof value!=='string'|
 function overlaps(a:any,b:any){return a.period_start<=b.period_end&&b.period_start<=a.period_end;}
 function claims(w:World,run:any){return w.payrollRuns.filter((prior:any)=>prior.id!==run.id&&!['draft','rejected'].includes(prior.status)&&overlaps(prior,run)&&prior.employee_ids.some((id:string)=>run.employee_ids.includes(id)));}
 const canonical=(value:any):string=>JSON.stringify(value,(_key,row)=>row&&typeof row==='object'&&!Array.isArray(row)?Object.fromEntries(Object.entries(row).sort(([a],[b])=>a.localeCompare(b))):row);
-export const payrollRunVersion=(run:any):string=>createHash('sha256').update(canonical(run)).digest('hex');
+export const payrollRunVersion=(run:any):string=>new Bun.CryptoHasher('sha256').update(canonical(run)).digest('hex');
 /** Preparation preserves source evidence without claiming wages or calculating tax. */
 export function payrollSourceSnapshot(w:World,run:any){const policy=w.payrollPolicies.find((row:any)=>row.id===run.policy_id)??null;return {policy,time_records:run.time_record_ids.map((id:string)=>w.payrollTimeRecords.find((row:any)=>row.id===id)??null),employees:run.employee_ids.map((id:string)=>w.employees.find((row:any)=>row.id===id)??null),tax_profiles:w.employeeTaxProfiles.filter((row:any)=>run.employee_ids.includes(row.employee_id)),prior_paid_runs:w.payrollRuns.filter((row:any)=>row.status==='paid'&&row.employee_ids.some((id:string)=>run.employee_ids.includes(id))).map((row:any)=>({id:row.id,paid_at:row.paid_at,period_start:row.period_start,period_end:row.period_end,policy:row.policy,lines:row.lines})),...(run.all_employees?{all_employee_ids:w.employees.map((row:any)=>row.id).sort()}:{}),...(policy?.mode==='us-federal-2026'?{payment_year:w.now.slice(0,4)}:{})};}
-export const payrollSourceVersion=(w:World,run:any):string=>createHash('sha256').update(canonical(payrollSourceSnapshot(w,run))).digest('hex');
+export const payrollSourceVersion=(w:World,run:any):string=>new Bun.CryptoHasher('sha256').update(canonical(payrollSourceSnapshot(w,run))).digest('hex');
 function sourceSelection(w:World,action:Action,h:PayrollHooks){
   const policy=h.find(w.payrollPolicies,action.policy_id,'Payroll policy'),sourceIds=list(action.time_record_ids,'time_record_ids',h),employeeIds=list(action.employee_ids??w.employees.map((employee:any)=>employee.id),'employee_ids',h);
   const sources=sourceIds.map(id=>h.find(w.payrollTimeRecords,id,'Payroll time'));for(const id of employeeIds)h.find(w.employees,id,'Employee');

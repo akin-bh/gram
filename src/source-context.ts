@@ -1,5 +1,4 @@
 import {z} from 'zod';
-import {createHash} from 'node:crypto';
 import {validateMailContent} from './mail.ts';
 import type {World} from './world.ts';
 
@@ -68,6 +67,6 @@ export function applySourceContext(world:World,input:unknown):World{
   const messages=context.messages.map((message,index)=>({id:`context-mail-${index+1}`,thread_id:`context-thread-${index+1}`,...validateMailContent({...message,direction:'inbound'}),created_at:world.now,direction:'inbound',labelIds:['INBOX','UNREAD'],delivery_status:'delivered',source_refs:[...message.source_refs],authority:'context-only',generated:true,record_facts:facts(message.source_refs)}));
   for(const party of context.parties){const row=world[party.collection].find((item:any)=>item.id===party.id);row[party.collection==='employees'?'display_name':'name']=party.name;}
   world.documents.push(...documents);world.messages.push(...messages);
-  world.sourceContext={...context,digest:createHash('sha256').update(JSON.stringify(context)).digest('hex'),authority:'context-only'};
+  world.sourceContext={...context,digest:new Bun.CryptoHasher('sha256').update(JSON.stringify(context)).digest('hex'),authority:'context-only'};
   return world;
 }

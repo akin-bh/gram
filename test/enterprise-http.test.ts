@@ -1,11 +1,10 @@
 import {test,expect} from 'bun:test';
-import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {hash} from '../src/store.ts';
 import {start} from './integration-fixture.ts';
-const okay=(response:any)=>{assert.equal(response.status,200,JSON.stringify(response.data));return response.data.result;};
+const okay=(response:any)=>{expect(response.status,JSON.stringify(response.data)).toBe(200);return response.data.result;};
 test('asset, FX and statutory workflows enforce HTTP authority and retain exact financial state, receipts and audit after restart',async()=>{
  const folder=mkdtempSync(join(tmpdir(),'gram-enterprise-http-')),database=join(folder,'worlds.sqlite');let f=await start(database);
  try{

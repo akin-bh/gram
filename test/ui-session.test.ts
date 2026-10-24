@@ -1,5 +1,4 @@
-import { test } from 'bun:test';
-import assert from 'node:assert/strict';
+import { test, expect } from 'bun:test';
 import { createService } from '../src/server.ts';
 
 test('two local UI instances keep independent authenticated sessions in one browser cookie jar', async () => {
@@ -10,8 +9,8 @@ test('two local UI instances keep independent authenticated sessions in one brow
   try {
     const firstHome = await first.fetch(new Request(firstBase));
     const secondHome = await second.fetch(new Request(secondBase));
-    assert.equal(firstHome.status, 200);
-    assert.equal(secondHome.status, 200);
+    expect(firstHome.status).toBe(200);
+    expect(secondHome.status).toBe(200);
     const firstCookie = firstHome.headers.get('set-cookie')!.split(';')[0]!;
     const secondCookie = secondHome.headers.get('set-cookie')!.split(';')[0]!;
 
@@ -21,14 +20,14 @@ test('two local UI instances keep independent authenticated sessions in one brow
       const split = cookie.indexOf('=');
       return [cookie.slice(0, split), cookie.slice(split + 1)];
     }));
-    assert.equal(jar.size, 2, 'Opening the preview must not overwrite the primary session');
+    expect(jar.size, 'Opening the preview must not overwrite the primary session').toBe(2);
     const combined = [...jar].map(([name, value]) => name + '=' + value).join('; ');
 
     const bootstrap = (service: typeof first, base: string, cookie: string) => service.fetch(new Request(base + '/api/bootstrap', { headers: { Cookie: cookie } }));
-    assert.equal((await bootstrap(first, firstBase, combined)).status, 200);
-    assert.equal((await bootstrap(second, secondBase, combined)).status, 200);
-    assert.equal((await bootstrap(first, firstBase, secondCookie)).status, 403);
-    assert.equal((await bootstrap(second, secondBase, firstCookie)).status, 403);
+    expect((await bootstrap(first, firstBase, combined)).status).toBe(200);
+    expect((await bootstrap(second, secondBase, combined)).status).toBe(200);
+    expect((await bootstrap(first, firstBase, secondCookie)).status).toBe(403);
+    expect((await bootstrap(second, secondBase, firstCookie)).status).toBe(403);
   } finally {
     await first.close();
     await second.close();

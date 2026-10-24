@@ -1,5 +1,4 @@
-import { test } from 'bun:test';
-import assert from 'node:assert/strict';
+import { test, expect } from 'bun:test';
 // @ts-ignore TS7016: The browser imports this pure JavaScript module directly.
 import { describeAuditEvent, buildAuditTree } from '../web/audit-tree.js';
 
@@ -9,15 +8,15 @@ const row = (seq: number, type: string, data: Record<string, any> = {}, extra: P
 const flatten = (nodes: Node[]): Node[] => nodes.flatMap(node => [node, ...flatten(node.children)]);
 const leaves = (nodes: Node[]) => flatten(nodes).filter(node => node.kind === 'event');
 function consistent(nodes: Node[], seqs: number[]) {
-  assert.deepEqual(leaves(nodes).map(node => node.seq).sort((a, b) => a - b), [...new Set(seqs)].sort((a, b) => a - b));
-  assert.equal(new Set(flatten(nodes).map(node => node.id)).size, flatten(nodes).length);
+  expect(leaves(nodes).map(node => node.seq).sort((a, b) => a - b)).toStrictEqual([...new Set(seqs)].sort((a, b) => a - b));
+  expect(new Set(flatten(nodes).map(node => node.id)).size).toBe(flatten(nodes).length);
   for (const node of flatten(nodes)) {
-    if (node.kind === 'event') { assert.equal(node.count, 1); assert.equal(node.children.length, 0); continue; }
-    assert.equal(node.event, undefined);
-    assert.equal(node.count, leaves(node.children).length);
-    assert.equal(node.minSeq, Math.min(...leaves(node.children).map(leaf => leaf.seq)));
-    assert.equal(node.maxSeq, Math.max(...leaves(node.children).map(leaf => leaf.seq)));
-    assert.deepEqual(node.children.map(child => child.minSeq), node.children.map(child => child.minSeq).sort((a, b) => a - b));
+    if (node.kind === 'event') { expect(node.count).toBe(1); expect(node.children.length).toBe(0); continue; }
+    expect(node.event).toBeUndefined();
+    expect(node.count).toBe(leaves(node.children).length);
+    expect(node.minSeq).toBe(Math.min(...leaves(node.children).map(leaf => leaf.seq)));
+    expect(node.maxSeq).toBe(Math.max(...leaves(node.children).map(leaf => leaf.seq)));
+    expect(node.children.map(child => child.minSeq)).toStrictEqual(node.children.map(child => child.minSeq).sort((a, b) => a - b));
   }
 }
 
@@ -35,13 +34,13 @@ test('interleaved requests and runs group through explicit links, including late
   ];
   const before = JSON.stringify(events);
   const tree: Node[] = buildAuditTree([...events].reverse(), { runs: [{ id: 'run-a', instruction: 'Reconcile\n supplier invoices', status: 'completed' }] });
-  assert.deepEqual(tree.map(node => node.id), ['run:run-b', 'run:run-a']);
-  assert.equal(tree[1]!.title, 'Reconcile supplier invoices');
-  assert.deepEqual(tree[1]!.children.map(node => node.id), ['request:start-a', 'request:match-a', 'event:8']);
-  assert.deepEqual(tree[1]!.children[1]!.children.map(node => node.seq), [3, 6, 7]);
-  assert.equal(tree[1]!.children[1]!.title, 'Match supplier invoice');
-  assert.equal(tree[0]!.at, events[8]!.at);
-  assert.equal(JSON.stringify(events), before);
+  expect(tree.map(node => node.id)).toStrictEqual(['run:run-b', 'run:run-a']);
+  expect(tree[1]!.title).toBe('Reconcile supplier invoices');
+  expect(tree[1]!.children.map(node => node.id)).toStrictEqual(['request:start-a', 'request:match-a', 'event:8']);
+  expect(tree[1]!.children[1]!.children.map(node => node.seq)).toStrictEqual([3, 6, 7]);
+  expect(tree[1]!.children[1]!.title).toBe('Match supplier invoice');
+  expect(tree[0]!.at).toBe(events[8]!.at);
+  expect(JSON.stringify(events)).toBe(before);
   consistent(tree, events.map(event => event.seq));
 });
 
@@ -50,9 +49,9 @@ test('deduplication and page boundaries never invent relationships from time, ty
   const second = row(11, 'operation.settled', { operation_id: 'op-shared', occurred_at: first.at });
   const events = [first, second, row(12, 'http.request', { method: 'GET', path: '/records', status: 200 }, { request_id: 'orphan', actor: 'agent-world:north' }), row(13, 'agent.started', { run_id: 'new-run', instruction: 'A later run' })];
   const tree: Node[] = buildAuditTree([...events, { ...first, type: 'duplicate.changed' }], { runs: [{ id: 'unseen', instruction: 'Not in this audit page' }] });
-  assert.deepEqual(tree.map(node => node.id), ['run:new-run', 'request:orphan', 'event:11', 'event:10']);
-  assert.equal(tree.at(-1)!.event, first);
-  assert.equal(tree[0]!.title, 'A later run');
+  expect(tree.map(node => node.id)).toStrictEqual(['run:new-run', 'request:orphan', 'event:11', 'event:10']);
+  expect(tree.at(-1)!.event).toBe(first);
+  expect(tree[0]!.title).toBe('A later run');
   consistent(tree, [10, 11, 12, 13]);
 });
 
@@ -63,8 +62,8 @@ test('ambiguous request run links remain standalone with each row present once',
     row(3, 'ledger.posted', { journal_id: 'journal-1' }, { request_id: 'conflict' }),
     row(4, 'agent.completed', { run_id: 'run-a' }),
   ]);
-  assert.deepEqual(tree.map(node => node.id), ['run:run-a', 'request:conflict']);
-  assert.equal(tree[1]!.children.length, 3);
+  expect(tree.map(node => node.id)).toStrictEqual(['run:run-a', 'request:conflict']);
+  expect(tree[1]!.children.length).toBe(3);
   consistent(tree, [1, 2, 3, 4]);
 });
 
@@ -79,12 +78,12 @@ test('explicit delivery IDs group lifecycle events and keep linked request bundl
     row(7, 'webhook.delivered', { delivery_id: 'delivery-a', status: 'delivered', attempt: 1 }),
   ];
   const before = JSON.stringify(events), tree: Node[] = buildAuditTree([...events].reverse());
-  assert.equal(tree.length, 1);
-  assert.equal(tree[0]!.id, 'delivery:delivery-a');
-  assert.equal(tree[0]!.title, 'Delivery · Company renamed');
-  assert.equal(tree[0]!.summary, 'Delivered · Attempt 1 · 7 events');
-  assert.deepEqual(tree[0]!.children.map(node => node.id), ['request:rename', 'event:4', 'request:receive', 'event:7']);
-  assert.equal(JSON.stringify(events), before);
+  expect(tree.length).toBe(1);
+  expect(tree[0]!.id).toBe('delivery:delivery-a');
+  expect(tree[0]!.title).toBe('Delivery · Company renamed');
+  expect(tree[0]!.summary).toBe('Delivered · Attempt 1 · 7 events');
+  expect(tree[0]!.children.map(node => node.id)).toStrictEqual(['request:rename', 'event:4', 'request:receive', 'event:7']);
+  expect(JSON.stringify(events)).toBe(before);
   consistent(tree, events.map(event => event.seq));
 });
 
@@ -98,14 +97,14 @@ test('delivery metadata uses explicit links without taking events from their age
     row(6, 'webhook.delivered', { delivery_id: 'delivery-a', status: 'delivered', attempt: 2 }),
   ];
   const retrying: Node[] = buildAuditTree(events.slice(0, 4));
-  assert.equal(retrying[0]!.summary, 'Retrying · Attempt 1 · 2 events');
-  assert.equal(retrying[0]!.tone, 'attention');
+  expect(retrying[0]!.summary).toBe('Retrying · Attempt 1 · 2 events');
+  expect(retrying[0]!.tone).toBe('attention');
   const tree: Node[] = buildAuditTree(events);
-  assert.deepEqual(tree.map(node => node.id), ['delivery:delivery-a', 'run:run-a']);
-  assert.equal(tree[0]!.title, 'Delivery · Ledger posted');
-  assert.equal(tree[0]!.summary, 'Delivered · Attempt 2 · 4 events');
-  assert.equal(tree[0]!.tone, 'success');
-  assert.equal(tree[1]!.children[0]!.id, 'request:post');
+  expect(tree.map(node => node.id)).toStrictEqual(['delivery:delivery-a', 'run:run-a']);
+  expect(tree[0]!.title).toBe('Delivery · Ledger posted');
+  expect(tree[0]!.summary).toBe('Delivered · Attempt 2 · 4 events');
+  expect(tree[0]!.tone).toBe('success');
+  expect(tree[1]!.children[0]!.id).toBe('request:post');
   consistent(tree, [1, 2, 3, 4, 5, 6]);
 });
 
@@ -119,10 +118,10 @@ test('conflicting delivery IDs and shared event IDs never invent a delivery pare
     row(6, 'http.request', { delivery_id: 'delivery-a', response: { delivery_id: 'delivery-b' } }),
   ];
   const tree: Node[] = buildAuditTree([...events, events[2]]);
-  assert.deepEqual(tree.map(node => node.id), ['event:6', 'request:unlinked-receive', 'delivery:delivery-b', 'delivery:delivery-a', 'request:conflict']);
-  assert.equal(tree.find(node => node.id === 'delivery:delivery-a')!.title, 'Delivery');
-  assert.equal(tree.find(node => node.id === 'delivery:delivery-b')!.title, 'Delivery');
-  assert.equal(tree.find(node => node.id === 'request:conflict')!.count, 2);
+  expect(tree.map(node => node.id)).toStrictEqual(['event:6', 'request:unlinked-receive', 'delivery:delivery-b', 'delivery:delivery-a', 'request:conflict']);
+  expect(tree.find(node => node.id === 'delivery:delivery-a')!.title).toBe('Delivery');
+  expect(tree.find(node => node.id === 'delivery:delivery-b')!.title).toBe('Delivery');
+  expect(tree.find(node => node.id === 'request:conflict')!.count).toBe(2);
   consistent(tree, [1, 2, 3, 4, 5, 6]);
 });
 
@@ -130,64 +129,64 @@ test('list descriptions shorten company-scoped paths and omit opaque references 
   const world = '4f1618ea-7a73-426a-9f9d-ab12097d7403';
   const data = { method: 'POST', path: '/api/worlds/' + world + '/actions', body: { type: 'pay_bill' }, status: 200 };
   const request = describeAuditEvent(row(1, 'http.request', data));
-  assert.match(request.summary, /POST \/company\/actions/);
-  assert.equal(request.summary.includes(world), false);
-  assert.equal(data.path, '/api/worlds/' + world + '/actions');
+  expect(request.summary).toMatch(/POST \/company\/actions/);
+  expect(request.summary.includes(world)).toBe(false);
+  expect(data.path).toBe('/api/worlds/' + world + '/actions');
   const received = describeAuditEvent(row(2, 'http.request', { method: 'POST', path: '/receivers/' + world, body: { object: 'event', type: 'company.renamed' }, status: 200 }));
-  assert.equal(received.title, 'Receive event');
-  assert.match(received.summary, /Company renamed/);
-  assert.match(received.summary, /POST \/receiver/);
-  assert.equal(received.summary.includes(world), false);
+  expect(received.title).toBe('Receive event');
+  expect(received.summary).toMatch(/Company renamed/);
+  expect(received.summary).toMatch(/POST \/receiver/);
+  expect(received.summary.includes(world)).toBe(false);
   const delivered = describeAuditEvent(row(3, 'webhook.delivered', { delivery_id: 'whd_' + 'a'.repeat(40), event_id: 'evt_' + 'b'.repeat(40), status: 'delivered', status_code: 200 }));
-  assert.equal(delivered.summary, 'Delivered · HTTP 200');
-  assert.match(describeAuditEvent(row(4, 'approval.decided', { approval_id: 'approval-1', decision: 'approved' })).summary, /approval-1/);
+  expect(delivered.summary).toBe('Delivered · HTTP 200');
+  expect(describeAuditEvent(row(4, 'approval.decided', { approval_id: 'approval-1', decision: 'approved' })).summary).toMatch(/approval-1/);
 });
 
 test('completed action envelopes preserve pending approval and settlement truth', () => {
   const event = row(1, 'action.completed', { action: { type: 'pay_bill', bill_id: 'bill-1' }, result: { status: 'awaiting_approval', approval_id: 'approval-1', approval: { id: 'approval-1', status: 'pending' } } }, { actor: 'agent-world:north', request_id: 'payment' });
   const description = describeAuditEvent(event);
-  assert.equal(description.title, 'Request supplier payment');
-  assert.equal(description.tone, 'attention');
-  assert.match(description.summary, /Awaiting approval/);
-  assert.match(description.summary, /approval-1/);
-  assert.equal(/settled|paid|succeeded/i.test(description.title + ' ' + description.summary), false);
+  expect(description.title).toBe('Request supplier payment');
+  expect(description.tone).toBe('attention');
+  expect(description.summary).toMatch(/Awaiting approval/);
+  expect(description.summary).toMatch(/approval-1/);
+  expect(/settled|paid|succeeded/i.test(description.title + ' ' + description.summary)).toBe(false);
   const neutral = describeAuditEvent(row(2, 'action.completed', { action: { type: 'pay_bill' }, result: {} }));
-  assert.equal(neutral.tone, 'neutral');
+  expect(neutral.tone).toBe('neutral');
   const pending = describeAuditEvent(row(3, 'action.completed', { action: { type: 'refund' }, result: { operation: { id: 'op-1', status: 'pending' } } }));
-  assert.equal(pending.tone, 'attention');
-  assert.match(pending.summary, /Pending/);
+  expect(pending.tone).toBe('attention');
+  expect(pending.summary).toMatch(/Pending/);
   const settled = describeAuditEvent(row(4, 'operation.settled', { operation_id: 'op-1' }));
-  assert.equal(settled.title, 'Operation settled');
-  assert.equal(settled.tone, 'success');
+  expect(settled.title).toBe('Operation settled');
+  expect(settled.tone).toBe('success');
   const tree: Node[] = buildAuditTree([event, row(5, 'http.request', { method: 'POST', path: '/actions', status: 200 }, { request_id: 'payment' })]);
-  assert.equal(tree[0]!.tone, 'attention');
-  assert.equal(tree[0]!.title, 'Request supplier payment');
+  expect(tree[0]!.tone).toBe('attention');
+  expect(tree[0]!.title).toBe('Request supplier payment');
 });
 
 test('actual HTTP errors and agent failures are errors, rejected decisions remain attention, and reads do not inherit historical result statuses', () => {
   const denied = describeAuditEvent(row(1, 'http.request', { method: 'POST', path: '/actions', status: 403, body: { type: 'pay_bill' }, response: { error: { code: 'controller_required', message: 'Controller required' } } }));
-  assert.equal(denied.tone, 'error');
-  assert.match(denied.summary, /HTTP 403/);
-  assert.match(denied.summary, /Controller required/);
-  assert.equal(describeAuditEvent(row(2, 'agent.trace', { type: 'agent.tool.response', status: 503 })).tone, 'error');
-  assert.equal(describeAuditEvent(row(3, 'agent.failed', { error: 'Budget exhausted' })).tone, 'error');
-  assert.equal(describeAuditEvent(row(4, 'service.error', { message: 'Failed request' })).tone, 'error');
-  assert.equal(describeAuditEvent(row(5, 'approval.decided', { decision: 'rejected', approval_id: 'approval-1' })).tone, 'attention');
-  assert.equal(describeAuditEvent(row(6, 'http.request', { method: 'GET', path: '/records', status: 200, response: { records: [{ status: 'failed' }, { status: 'pending' }] } })).tone, 'neutral');
+  expect(denied.tone).toBe('error');
+  expect(denied.summary).toMatch(/HTTP 403/);
+  expect(denied.summary).toMatch(/Controller required/);
+  expect(describeAuditEvent(row(2, 'agent.trace', { type: 'agent.tool.response', status: 503 })).tone).toBe('error');
+  expect(describeAuditEvent(row(3, 'agent.failed', { error: 'Budget exhausted' })).tone).toBe('error');
+  expect(describeAuditEvent(row(4, 'service.error', { message: 'Failed request' })).tone).toBe('error');
+  expect(describeAuditEvent(row(5, 'approval.decided', { decision: 'rejected', approval_id: 'approval-1' })).tone).toBe('attention');
+  expect(describeAuditEvent(row(6, 'http.request', { method: 'GET', path: '/records', status: 200, response: { records: [{ status: 'failed' }, { status: 'pending' }] } })).tone).toBe('neutral');
 });
 
 test('audit timestamps stay separate from simulation time and labels stay bounded on one line', () => {
   const event = row(20, 'custom.new_event', { occurred_at: '2035-01-01T00:00:00.000Z' }, { actor: 'controller-local' });
   const description = describeAuditEvent(event);
-  assert.equal(description.time, event.at);
-  assert.equal(description.title, 'Custom new event');
-  assert.equal(describeAuditEvent(row(22, 'constructor')).title, 'Constructor');
-  assert.equal(describeAuditEvent(row(23, 'action.completed', { action: { type: 'toString' } })).title, 'To String');
-  assert.equal(description.actor, 'Controller');
-  assert.equal(describeAuditEvent({ ...event, at: undefined }).time, '');
+  expect(description.time).toBe(event.at);
+  expect(description.title).toBe('Custom new event');
+  expect(describeAuditEvent(row(22, 'constructor')).title).toBe('Constructor');
+  expect(describeAuditEvent(row(23, 'action.completed', { action: { type: 'toString' } })).title).toBe('To String');
+  expect(description.actor).toBe('Controller');
+  expect(describeAuditEvent({ ...event, at: undefined }).time).toBe('');
   const tree: Node[] = buildAuditTree([row(21, 'agent.started', { run_id: 'long', instruction: 'Review\n invoices '.repeat(40), occurred_at: '2035-01-01' })]);
-  assert.ok(tree[0]!.title.length <= 120);
-  assert.equal(tree[0]!.title.includes('\n'), false);
-  assert.equal(tree[0]!.at, '2026-10-24T10:00:21.000Z');
-  assert.deepEqual(buildAuditTree([null, { seq: NaN }, { seq: -1 }, { seq: 0 }]), []);
+  expect(tree[0]!.title.length <= 120).toBeTruthy();
+  expect(tree[0]!.title.includes('\n')).toBe(false);
+  expect(tree[0]!.at).toBe('2026-10-24T10:00:21.000Z');
+  expect(buildAuditTree([null, { seq: NaN }, { seq: -1 }, { seq: 0 }])).toStrictEqual([]);
 });

@@ -1,6 +1,4 @@
-import { test } from 'bun:test';
-import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { test, expect } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,30 +45,30 @@ test('durable financial outbox delivers raw body signed with generic and Stripe-
   const endpoint = await receiver((req, res, raw) => {
     received++;
     const timestamp = String(req.headers['x-finance-world-timestamp']);
-    const expected = createHmac('sha256', signingSecret).update(`${timestamp}.${raw}`).digest('hex');
-    assert.equal(req.headers['x-finance-world-signature'], `v1=${expected}`);
-    assert.equal(req.headers['stripe-signature'], `t=${timestamp},v1=${expected}`);
+    const expected = new Bun.CryptoHasher('sha256', signingSecret).update(`${timestamp}.${raw}`).digest('hex');
+    expect(req.headers['x-finance-world-signature']).toBe(`v1=${expected}`);
+    expect(req.headers['stripe-signature']).toBe(`t=${timestamp},v1=${expected}`);
     verified = hooks.verify(worldId, new Headers(req.headers as HeadersInit), raw);
-    assert.equal(verified.event.data.object.operation_id, 'op-17');
-    assert.equal(verified.event.data.object.amount_minor, 12345);
+    expect(verified.event.data.object.operation_id).toBe('op-17');
+    expect(verified.event.data.object.amount_minor).toBe(12345);
     res.writeHead(202); res.end('accepted');
   });
   const f = fixture({ allowedPorts: [endpoint.port] }); hooks = f.hooks;
   try {
     const sub = hooks.register(worldId, { url: endpoint.url, events: ['operation.*'], signingStyle: 'stripe' }); signingSecret = sub.secret;
     const emitted = f.emit(), replay = f.emit();
-    assert.deepEqual(replay.event_ids, emitted.event_ids); assert.equal(replay.replayed, true);
-    assert.equal(hooks.deliveries(worldId).data.length, 1);
+    expect(replay.event_ids).toStrictEqual(emitted.event_ids); expect(replay.replayed).toBe(true);
+    expect(hooks.deliveries(worldId).data.length).toBe(1);
     const result = await hooks.deliverDue(worldId);
-    assert.equal(result.delivered, 1); assert.equal(received, 1);
+    expect(result.delivered).toBe(1); expect(received).toBe(1);
     const delivery = hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.status, 'delivered'); assert.equal(delivery.attempts, 1);
-    assert.equal(verified.delivery_id, delivery.id); assert.equal(verified.event_id, emitted.event_ids[0]);
-    assert.equal(delivery.event.context.revision, 2);
-    assert.equal((await hooks.deliverDue()).attempted, 0);
+    expect(delivery.status).toBe('delivered'); expect(delivery.attempts).toBe(1);
+    expect(verified.delivery_id).toBe(delivery.id); expect(verified.event_id).toBe(emitted.event_ids[0]);
+    expect(delivery.event.context.revision).toBe(2);
+    expect((await hooks.deliverDue()).attempted).toBe(0);
     const publicData = JSON.stringify({ subscriptions: hooks.list(worldId), deliveries: hooks.deliveries(worldId), audit: f.store.events(worldId, 0, 1000) });
-    assert.ok(!publicData.includes(signingSecret)); assert.ok(!publicData.includes('signing_secret'));
-    assert.equal(f.store.verify(worldId).valid, true);
+    expect(!publicData.includes(signingSecret)).toBeTruthy(); expect(!publicData.includes('signing_secret')).toBeTruthy();
+    expect(f.store.verify(worldId).valid).toBe(true);
   } finally { await f.close(); await endpoint.close(); }
 });
 
@@ -78,19 +76,19 @@ test('event enqueue and business state roll back together; event identity reject
   const f = fixture();
   try {
     f.hooks.register(worldId, { url: baseUrl + '/receiver', events: ['operation.settled'] });
-    assert.throws(() => f.store.once(worldId, 'agent', 'rolled-back', {}, () => {
+    expect(() => f.store.once(worldId, 'agent', 'rolled-back', {}, () => {
       const world = f.store.world(worldId); world.revision = 99; f.store.save(world);
       f.hooks.enqueue(worldId, [financialEvent], { revision: 99 });
       throw Error('economic transaction rejected');
-    }), /economic transaction rejected/);
-    assert.equal(f.store.world(worldId).revision, 1); assert.equal(f.hooks.deliveries(worldId).data.length, 0);
-    assert.equal((f.store.db.prepare('SELECT COUNT(*) AS n FROM webhook_events').get() as any).n, 0);
+    })).toThrow(/economic transaction rejected/);
+    expect(f.store.world(worldId).revision).toBe(1); expect(f.hooks.deliveries(worldId).data.length).toBe(0);
+    expect((f.store.db.prepare('SELECT COUNT(*) AS n FROM webhook_events').get() as any).n).toBe(0);
     const first = f.emit();
-    assert.deepEqual(f.hooks.enqueue(worldId, [financialEvent], { revision: 2, requestId: 'another-request' }).event_ids, first.event_ids);
-    assert.throws(() => f.hooks.enqueue(worldId, [{ ...financialEvent, amount_minor: 999 }], { revision: 2 }), { code: 'webhook_event_conflict' });
-    assert.equal(f.hooks.deliveries(worldId).data[0]!.event.data.object.amount_minor, 12345);
-    assert.throws(() => f.hooks.enqueue(worldId, [financialEvent], {}), { code: 'webhook_event_identity_required' });
-    assert.throws(() => f.hooks.enqueue(worldId, [{} as any], { revision: 3 }), { code: 'invalid_webhook_event_type' });
+    expect(f.hooks.enqueue(worldId, [financialEvent], { revision: 2, requestId: 'another-request' }).event_ids).toStrictEqual(first.event_ids);
+    expect(() => f.hooks.enqueue(worldId, [{ ...financialEvent, amount_minor: 999 }], { revision: 2 })).toThrow(expect.objectContaining({ code: 'webhook_event_conflict' }));
+    expect(f.hooks.deliveries(worldId).data[0]!.event.data.object.amount_minor).toBe(12345);
+    expect(() => f.hooks.enqueue(worldId, [financialEvent], {})).toThrow(expect.objectContaining({ code: 'webhook_event_identity_required' }));
+    expect(() => f.hooks.enqueue(worldId, [{} as any], { revision: 3 })).toThrow(expect.objectContaining({ code: 'invalid_webhook_event_type' }));
   } finally { await f.close(); }
 });
 
@@ -101,19 +99,19 @@ test('failure, durable restart, backoff, and explicit redelivery preserve event 
   let f = fixture({ allowedPorts: [endpoint.port], now: () => now, baseRetryMs: 1000 }, database);
   try {
     f.hooks.register(worldId, { url: endpoint.url }); const original = f.emit();
-    assert.equal((await f.hooks.deliverDue()).failed, 1);
+    expect((await f.hooks.deliverDue()).failed).toBe(1);
     let delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.status, 'retrying'); assert.equal(delivery.attempts, 1); assert.equal(delivery.next_attempt_at, now + 1000);
-    assert.equal((await f.hooks.deliverDue()).attempted, 0, 'Backoff cannot be bypassed by polling');
+    expect(delivery.status).toBe('retrying'); expect(delivery.attempts).toBe(1); expect(delivery.next_attempt_at).toBe(now + 1000);
+    expect((await f.hooks.deliverDue()).attempted, 'Backoff cannot be bypassed by polling').toBe(0);
     await f.close(); f = fixture({ allowedPorts: [endpoint.port], now: () => now }, database);
     now += 1000; accept = true;
-    assert.equal((await f.hooks.deliverDue()).delivered, 1);
+    expect((await f.hooks.deliverDue()).delivered).toBe(1);
     delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.attempts, 2); assert.equal(delivery.id, original.delivery_ids[0]); assert.equal(delivery.event.id, original.event_ids[0]);
-    assert.equal(requests[0]!.raw, requests[1]!.raw); assert.equal(requests[0]!.id, requests[1]!.id);
+    expect(delivery.attempts).toBe(2); expect(delivery.id).toBe(original.delivery_ids[0]); expect(delivery.event.id).toBe(original.event_ids[0]);
+    expect(requests[0]!.raw).toBe(requests[1]!.raw); expect(requests[0]!.id).toBe(requests[1]!.id);
     f.hooks.retry(worldId, delivery.id); await f.hooks.deliverDue();
-    assert.equal(requests[2]!.id, delivery.id); assert.equal(requests[2]!.raw, requests[0]!.raw);
-    assert.equal(f.hooks.deliveries(worldId).data[0]!.attempts, 3);
+    expect(requests[2]!.id).toBe(delivery.id); expect(requests[2]!.raw).toBe(requests[0]!.raw);
+    expect(f.hooks.deliveries(worldId).data[0]!.attempts).toBe(3);
   } finally { await f.close(); await endpoint.close(); rmSync(folder, { recursive: true, force: true }); }
 });
 
@@ -124,13 +122,13 @@ test('expired claims recover after restart; an unexpired claim cannot be sent tw
   try {
     f.hooks.register(worldId, { url: endpoint.url }); const result = f.emit(), id = result.delivery_ids[0]!;
     f.store.db.prepare("UPDATE webhook_deliveries SET status='inflight',claim_owner='dead-process',lease_until=?,attempts=1,cycle_attempts=1 WHERE id=?").run(now + 5000, id);
-    assert.equal((await f.hooks.deliverDue()).attempted, 0); assert.equal(deliveries, 0);
+    expect((await f.hooks.deliverDue()).attempted).toBe(0); expect(deliveries).toBe(0);
     now += 5001; await f.hooks.close();
     const resumed = new Webhooks(f.store, { baseUrl, allowedPorts: [endpoint.port], now: () => now });
     try {
-      assert.equal((await resumed.deliverDue()).delivered, 1); assert.equal(deliveries, 1);
-      const delivery = resumed.deliveries(worldId).data[0]!; assert.equal(delivery.id, id); assert.equal(delivery.attempts, 2);
-      assert.ok(f.store.events(worldId, 0, 1000).some(e => e.type === 'webhook.attempt_started' && e.data.lease_recovered));
+      expect((await resumed.deliverDue()).delivered).toBe(1); expect(deliveries).toBe(1);
+      const delivery = resumed.deliveries(worldId).data[0]!; expect(delivery.id).toBe(id); expect(delivery.attempts).toBe(2);
+      expect(f.store.events(worldId, 0, 1000).some(e => e.type === 'webhook.attempt_started' && e.data.lease_recovered)).toBeTruthy();
     } finally { await resumed.close(); }
   } finally { await f.close(); await endpoint.close(); }
 });
@@ -143,15 +141,15 @@ test('maximum attempts dead-letter durably; explicit retry and disabling have cl
     const sub = f.hooks.register(worldId, { url: endpoint.url }); const first = f.emit();
     await f.hooks.deliverDue(); now += 10; await f.hooks.deliverDue();
     let delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.status, 'dead'); assert.equal(delivery.attempts, 2); now += 10000;
-    assert.equal((await f.hooks.deliverDue()).attempted, 0);
+    expect(delivery.status).toBe('dead'); expect(delivery.attempts).toBe(2); now += 10000;
+    expect((await f.hooks.deliverDue()).attempted).toBe(0);
     f.hooks.retry(worldId, delivery.id); await f.hooks.deliverDue();
     delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.id, first.delivery_ids[0]); assert.equal(delivery.status, 'retrying'); assert.equal(delivery.attempts, 3);
+    expect(delivery.id).toBe(first.delivery_ids[0]); expect(delivery.status).toBe('retrying'); expect(delivery.attempts).toBe(3);
     f.hooks.disable(worldId, sub.id);
-    assert.equal(f.hooks.deliveries(worldId).data[0]!.status, 'cancelled');
-    assert.throws(() => f.hooks.retry(worldId, delivery.id), { code: 'webhook_subscription_disabled' });
-    f.emit(3); assert.equal(f.hooks.deliveries(worldId).data.length, 1);
+    expect(f.hooks.deliveries(worldId).data[0]!.status).toBe('cancelled');
+    expect(() => f.hooks.retry(worldId, delivery.id)).toThrow(expect.objectContaining({ code: 'webhook_subscription_disabled' }));
+    f.emit(3); expect(f.hooks.deliveries(worldId).data.length).toBe(1);
   } finally { await f.close(); await endpoint.close(); }
 });
 
@@ -159,9 +157,9 @@ test('callback validation rejects DNS, credentials, alternate loopback spellings
   const f = fixture();
   try {
     for (const url of ['https://127.0.0.1:24300/callback', 'http://localhost:24300/callback', 'http://[::1]:24300/callback', 'http://127.1:24300/callback', 'http://2130706433:24300/callback', 'http://127.0.0.1:24301/callback', 'http://user:password@127.0.0.1:24300/callback', 'http://127.0.0.1:24300/callback#fragment', 'http://169.254.169.254:24300/callback']) {
-      assert.throws(() => f.hooks.register(worldId, { url }), /callback|Callback|URL|destination|loopback/i, url);
+      expect(() => f.hooks.register(worldId, { url }), url).toThrow(/callback|Callback|URL|destination|loopback/i);
     }
-    assert.throws(() => f.hooks.register(worldId, { url: baseUrl + '/receiver', events: ['operation.*.*'] }), { code: 'invalid_webhook_events' });
+    expect(() => f.hooks.register(worldId, { url: baseUrl + '/receiver', events: ['operation.*.*'] })).toThrow(expect.objectContaining({ code: 'invalid_webhook_events' }));
   } finally { await f.close(); }
 });
 
@@ -177,10 +175,10 @@ test('redirect responses are never followed and receiver bodies are bounded', as
     f.hooks.register(worldId, { url: endpoint.url }); f.emit();
     await f.hooks.deliverDue();
     let delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(targetHits, 0); assert.equal(delivery.last_error, 'redirect_refused'); assert.equal(delivery.last_status, 307);
+    expect(targetHits).toBe(0); expect(delivery.last_error).toBe('redirect_refused'); expect(delivery.last_status).toBe(307);
     serveHugeBody = true; f.hooks.retry(worldId, delivery.id); await f.hooks.deliverDue();
     delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.response_excerpt!.length, 128); assert.equal(delivery.response_truncated, 1); assert.equal(targetHits, 0);
+    expect(delivery.response_excerpt!.length).toBe(128); expect(delivery.response_truncated).toBe(1); expect(targetHits).toBe(0);
   } finally { await f.close(); await endpoint.close(); await target.close(); }
 });
 
@@ -193,12 +191,12 @@ test('timeouts and graceful close leave durable retryable work instead of hangin
     f.hooks.register(worldId, { url: endpoint.url }); f.emit();
     const run = f.hooks.deliverDue(); await started; await run;
     let delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.status, 'retrying'); assert.equal(delivery.last_error, 'delivery_timeout');
+    expect(delivery.status).toBe('retrying'); expect(delivery.last_error).toBe('delivery_timeout');
     f.hooks.retry(worldId, delivery.id);
     const pending = f.hooks.deliverDue(); await f.hooks.close(); await pending;
     delivery = f.hooks.deliveries(worldId).data[0]!;
-    assert.equal(delivery.status, 'retrying'); assert.equal(delivery.last_error, 'service_stopping');
-    await assert.rejects(f.hooks.deliverDue(), { code: 'webhooks_closed' });
+    expect(delivery.status).toBe('retrying'); expect(delivery.last_error).toBe('service_stopping');
+    await expect(f.hooks.deliverDue()).rejects.toMatchObject({ code: 'webhooks_closed' });
   } finally { await f.close(); await endpoint.close(); }
 });
 
@@ -209,16 +207,16 @@ test('verification binds body, subscription, world, ID and timestamp and exclude
   const f = fixture({ allowedPorts: [endpoint.port], now: () => now });
   try {
     const sub = f.hooks.register(worldId, { url: endpoint.url }); f.emit(); await f.hooks.deliverDue();
-    assert.ok(captured); const { headers, raw } = captured;
-    assert.equal(f.hooks.verify(worldId, headers, raw).event.data.object.operation_id, 'op-17');
-    assert.throws(() => f.hooks.verify(worldId, headers, raw + ' '), { code: 'invalid_webhook_body' });
-    assert.throws(() => f.hooks.verify('other-world', headers, raw), { code: 'webhook_subscription_not_found' });
+    expect(captured).toBeTruthy(); const { headers, raw } = captured!;
+    expect(f.hooks.verify(worldId, headers, raw).event.data.object.operation_id).toBe('op-17');
+    expect(() => f.hooks.verify(worldId, headers, raw + ' ')).toThrow(expect.objectContaining({ code: 'invalid_webhook_body' }));
+    expect(() => f.hooks.verify('other-world', headers, raw)).toThrow(expect.objectContaining({ code: 'webhook_subscription_not_found' }));
     const wrong = new Headers(headers); wrong.set('x-finance-world-signature', 'v1=' + '0'.repeat(64));
-    assert.throws(() => f.hooks.verify(worldId, wrong, raw), { code: 'invalid_webhook_signature' });
+    expect(() => f.hooks.verify(worldId, wrong, raw)).toThrow(expect.objectContaining({ code: 'invalid_webhook_signature' }));
     const wrongId = new Headers(headers); wrongId.set('x-finance-world-delivery-id', 'delivery-from-another-event');
-    assert.throws(() => f.hooks.verify(worldId, wrongId, raw), { code: 'invalid_webhook_identity' });
-    now += 301000; assert.throws(() => f.hooks.verify(worldId, headers, raw), { code: 'expired_webhook_signature' });
-    assert.ok(!JSON.stringify(f.store.events(worldId, 0, 1000)).includes(sub.secret));
+    expect(() => f.hooks.verify(worldId, wrongId, raw)).toThrow(expect.objectContaining({ code: 'invalid_webhook_identity' }));
+    now += 301000; expect(() => f.hooks.verify(worldId, headers, raw)).toThrow(expect.objectContaining({ code: 'expired_webhook_signature' }));
+    expect(!JSON.stringify(f.store.events(worldId, 0, 1000)).includes(sub.secret)).toBeTruthy();
   } finally { await f.close(); await endpoint.close(); }
 });
 
@@ -235,9 +233,9 @@ test('concurrent dispatchers honor the durable claim and do not deliver an activ
   try {
     f.hooks.register(worldId, { url: endpoint.url }); f.emit();
     const first = f.hooks.deliverDue(); await started;
-    assert.equal((await second.deliverDue()).attempted, 0);
-    acknowledge?.(); assert.equal((await first).delivered, 1);
-    assert.equal(received, 1); assert.equal(f.hooks.deliveries(worldId).data[0]!.attempts, 1);
+    expect((await second.deliverDue()).attempted).toBe(0);
+    acknowledge?.(); expect((await first).delivered).toBe(1);
+    expect(received).toBe(1); expect(f.hooks.deliveries(worldId).data[0]!.attempts).toBe(1);
   } finally { acknowledge?.(); await second.close(); await f.close(); await endpoint.close(); }
 });
 
@@ -251,7 +249,7 @@ test('receiver errors cannot echo the signing secret or JSON credentials into de
   try {
     signingSecret = f.hooks.register(worldId, { url: endpoint.url }).secret; f.emit(); await f.hooks.deliverDue();
     const serialized = JSON.stringify({ deliveries: f.hooks.deliveries(worldId), audit: f.store.events(worldId, 0, 1000) });
-    for (const credential of [signingSecret, 'receiver-access-credential', 'receiver-client-credential']) assert.ok(!serialized.includes(credential));
+    for (const credential of [signingSecret, 'receiver-access-credential', 'receiver-client-credential']) expect(!serialized.includes(credential)).toBeTruthy();
   } finally { await f.close(); await endpoint.close(); }
 });
 
@@ -276,12 +274,12 @@ test('simultaneous world-specific dispatches return and deliver only their reque
     const second = f.hooks.deliverDue(secondWorld), duplicate = f.hooks.deliverDue(secondWorld);
     acknowledge?.();
     const [a, b, same] = await Promise.all([first, second, duplicate]);
-    assert.deepEqual(a.data.map(row => row.world), [worldId]);
-    assert.deepEqual(b.data.map(row => row.world), [secondWorld]);
-    assert.deepEqual(same.data.map(row => row.id), b.data.map(row => row.id));
-    assert.deepEqual(observed, [worldId, secondWorld]);
-    assert.equal(f.hooks.deliveries(secondWorld).data[0]!.status, 'delivered');
-    assert.equal(f.hooks.deliveries(secondWorld).data[0]!.attempts, 1);
+    expect(a.data.map(row => row.world)).toStrictEqual([worldId]);
+    expect(b.data.map(row => row.world)).toStrictEqual([secondWorld]);
+    expect(same.data.map(row => row.id)).toStrictEqual(b.data.map(row => row.id));
+    expect(observed).toStrictEqual([worldId, secondWorld]);
+    expect(f.hooks.deliveries(secondWorld).data[0]!.status).toBe('delivered');
+    expect(f.hooks.deliveries(secondWorld).data[0]!.attempts).toBe(1);
   } finally { acknowledge?.(); await f.close(); await endpoint.close(); }
 });
 
@@ -293,9 +291,9 @@ test('a scoped request waits behind a background batch without inheriting other-
     f.store.save({ id: secondWorld });
     for (const id of [worldId, secondWorld]) { f.hooks.register(id, { url: endpoint.url }); f.hooks.enqueue(id, [financialEvent], { revision: 2 }); }
     const [background, scoped] = await Promise.all([f.hooks.deliverDue(undefined, { limit: 1 }), f.hooks.deliverDue(secondWorld)]);
-    assert.equal(background.data[0]!.world, worldId);
-    assert.deepEqual(scoped.data.map(row => row.world), [secondWorld]);
-    assert.equal(scoped.delivered, 1);
+    expect(background.data[0]!.world).toBe(worldId);
+    expect(scoped.data.map(row => row.world)).toStrictEqual([secondWorld]);
+    expect(scoped.delivered).toBe(1);
   } finally { await f.close(); await endpoint.close(); }
 });
 
@@ -310,11 +308,13 @@ test('shutdown aborts an active batch and rejects queued scoped dispatch without
     for (const id of [worldId, secondWorld]) { f.hooks.register(id, { url: endpoint.url }); f.hooks.enqueue(id, [financialEvent], { revision: 2 }); }
     const active = f.hooks.deliverDue(worldId); await started;
     const queued = f.hooks.deliverDue(secondWorld);
-    const rejected = assert.rejects(queued, { code: 'webhooks_closed' });
-    await f.hooks.close(); await active; await rejected;
-    assert.equal(received, 1);
-    assert.equal(f.hooks.deliveries(worldId).data[0]!.status, 'retrying');
-    assert.equal(f.hooks.deliveries(secondWorld).data[0]!.status, 'pending');
-    assert.equal(f.hooks.deliveries(secondWorld).data[0]!.attempts, 0);
+    // Capture the rejection now; the shutdown below is what rejects it.
+    const rejection = queued.then(() => undefined, (error: unknown) => error);
+    await f.hooks.close(); await active;
+    expect(await rejection).toMatchObject({ code: 'webhooks_closed' });
+    expect(received).toBe(1);
+    expect(f.hooks.deliveries(worldId).data[0]!.status).toBe('retrying');
+    expect(f.hooks.deliveries(secondWorld).data[0]!.status).toBe('pending');
+    expect(f.hooks.deliveries(secondWorld).data[0]!.attempts).toBe(0);
   } finally { await f.close(); await endpoint.close(); }
 });
