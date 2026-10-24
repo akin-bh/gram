@@ -209,7 +209,13 @@ function invalid(field, message) { throw Object.assign(Error(message), { field }
 async function api(url, options = {}) {
   const response = await fetch(url, { ...options, signal: options.signal || AbortSignal.timeout(45000), headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
   const data = await response.json().catch(() => { throw Error('Unreadable service response (' + response.status + ').'); });
-  if (!response.ok) { const error = Error(data.error?.message || 'Request failed'); error.status = response.status; error.code = data.error?.code; throw error; }
+  if (!response.ok) {
+    const error = Error(data.error?.message || 'Request failed'); error.status = response.status; error.code = data.error?.code;
+    // The service was restarted on another database: the session is gone. Start one again, once.
+    if (response.status === 401 && data.error?.code === 'authentication_required' && !sessionStorage.getItem('gram-reauth')) { sessionStorage.setItem('gram-reauth', '1'); location.assign('/'); }
+    throw error;
+  }
+  if (url === '/api/bootstrap') sessionStorage.removeItem('gram-reauth');
   return data;
 }
 const post = (url, data = {}, options = {}) => api(url, { method: 'POST', body: JSON.stringify(data), ...options });

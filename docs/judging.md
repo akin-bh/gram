@@ -13,4 +13,6 @@
 
 **Their scenario.** Work → Bank feed → **Record a venue deposit**: their payer, amount and memo. Or **Access → bank · Revoke**: the seat can neither read the bank nor be launched, and the attempt is audited.
 
+**Words on the cards.** *Gross box office*: all the ticket money for a show. *Ticket audit*: Ticketmaster's count of what sold; the truth for gross. *Statement*: the venue's own account of the show: gross, what it deducted, what it sent. *Deposit*: what the venue actually paid into the bank. *Card fee (merchant fee)*: the card-processing cost the venue deducts; the contract caps it. *Music licence*: the fee paid to the songwriters' societies, a percentage of gross. *Recoupment*: the venue taking back an advance it paid earlier; not a shortfall. *Deferred revenue*: ticket money not yet counted as income because the show has not happened, Live Nation's own 10-K rule. *Chase*: ask the venue for money still owed. *Policy*: a rule the seat learned from last season, approved by the Director, that lets it post without asking. *Backtest*: how many of last season's cases agree with a rule, and how many don't.
+
 **If the room's network fails.** Everything in Slack is also in the console under **Needs you**; decide there.

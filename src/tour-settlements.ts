@@ -47,11 +47,11 @@ export const tourAccounts:[string,string,string][]=[
  * is the deferred-to-recognized move the 10-K requires on the event date. */
 export const lineKinds={
   venue_hire:{account:'venue-hire-expense',label:'Venue hire'},
-  merchant_fee:{account:'merchant-fee-expense',label:'Merchant fee'},
-  music_licence:{account:'music-licence-expense',label:'Music licence fee (APRA/PPCA)'},
-  catering:{account:'catering-expense',label:'Catering recharge'},
-  advance_recoupment:{account:'venue-advances',label:'Recoupment of the venue partner\'s contract advance'},
-  fx_difference:{account:'fx-gain-loss',label:'FX difference'},
+  merchant_fee:{account:'merchant-fee-expense',label:'Card fee (merchant fee)'},
+  music_licence:{account:'music-licence-expense',label:'Music licence fee'},
+  catering:{account:'catering-expense',label:'Catering'},
+  advance_recoupment:{account:'venue-advances',label:'Repayment of the venue\'s advance (recoupment)'},
+  fx_difference:{account:'fx-gain-loss',label:'Exchange-rate difference'},
 } as const;
 export type LineKind=keyof typeof lineKinds;
 export const invoiceDecisions=['approve','reroute','reject_duplicate','hold_missing_document'] as const;
@@ -512,7 +512,7 @@ function tourCoverage(w:World,item:any,resolution:TourResolution,features:any,po
     if(!features.refs.includes(show.id)){const alias=find('venue_alias',rule=>rule.venue_ids.includes(show.venue_id)&&payerMatches(features.receipt.payer_name,rule.payer_name));if(alias&&features.venue?.id===show.venue_id)use(alias);else gaps.push(`${show.id} is not cited in the deposit memo${features.venue?.id===show.venue_id?' and no approved alias covers the payer':''}`);}
     const statement=statementFor(show.id);
     if(!statement){gaps.push(`${show.id} has no settlement statement on file`);continue;}
-    if(statement.gross_box_office_minor!==show.gross_box_office_minor)gaps.push(`${show.id}: statement gross differs from the ticket audit by ${money(statement.gross_box_office_minor-show.gross_box_office_minor,show.currency)}`);
+    if(statement.gross_box_office_minor!==show.gross_box_office_minor){const gap=statement.gross_box_office_minor-show.gross_box_office_minor;gaps.push(`${show.id}: the venue states ${money(Math.abs(gap),show.currency)} ${gap<0?'less':'more'} ticket income than the ticket audit`);}
     if(venue&&statement.lines.some((line:any)=>!venue.contract.permitted_deductions.includes(line.kind)))gaps.push(`${show.id}: the statement deducts something the contract does not permit`);
     for(const line of resolution.lines.filter(l=>l.show_id===show.id)){
       const label=`${lineKinds[line.kind].label.toLowerCase()} of ${aud(Math.abs(line.amount_minor))} on ${show.id}`;let policy:any;
@@ -680,7 +680,12 @@ export const tourDomain:SeatDomain=registerDomain({
   features:tourFeatures,
   coverage:(w,item,resolution,features,policies)=>tourCoverage(w,item,resolution,features,policies),
   confidence:(w,item,resolution,features,coverage,precedents,agentConfidence)=>tourConfidence(w,item,resolution,features,coverage,precedents,agentConfidence),
-  describeResolution:(w,r)=>r.kind==='invoice'?[r.decision==='approve'?'Approve for payment':r.decision==='reroute'?`Route to ${w.approvers.find((a:any)=>a.id===r.route_to)?.title??r.route_to} for approval`:r.decision==='reject_duplicate'?'Reject as a duplicate':'Hold until the document is filed']:[...r.allocations.map((row:any)=>`Allocate ${aud(row.amount_minor)} to ${row.show_id}`),...r.lines.map((row:any)=>`${row.amount_minor<0?'Credit':'Code'} ${aud(Math.abs(row.amount_minor))} on ${row.show_id} as ${lineKinds[row.kind as LineKind].label.toLowerCase()}`),...r.recognize.map((id:string)=>`Recognize ${id} revenue (performed)`),...(r.hold_on_account?[`Hold ${aud(r.unapplied_minor)} in clearing`]:[]),...(r.chase?[`Chase the venue for ${aud(r.chase.amount_minor)} on ${r.chase.show_id}`]:[])],
+  // Lines a colleague who is not an accountant can read: the show by its city, money with its sign, no shorthand.
+  describeResolution:(w,r)=>{
+    const show=(id:string)=>{const row=w.shows.find((s:any)=>s.id===id);return row?`the ${row.city} show (${id})`:id;};
+    if(r.kind==='invoice')return [r.decision==='approve'?'Approve for payment':r.decision==='reroute'?`Send to the ${w.approvers.find((a:any)=>a.id===r.route_to)?.title??r.route_to} to approve: the first approver's limit does not cover it`:r.decision==='reject_duplicate'?'Reject: the same invoice was already approved once':'Hold until the invoice document is filed'];
+    return [...r.allocations.map((row:any)=>`Put ${aud(row.amount_minor)} against ${show(row.show_id)}`),...r.lines.map((row:any)=>`${row.amount_minor<0?'Credit':'Book'} ${aud(Math.abs(row.amount_minor))} as ${lineKinds[row.kind as LineKind].label.toLowerCase()} for ${show(row.show_id)}`),...r.recognize.map((id:string)=>`Count the ticket money for ${show(id)} as revenue: the show happened`),...(r.hold_on_account?[`Hold ${aud(r.unapplied_minor)} unallocated until a person decides`]:[]),...(r.chase?[`Ask the venue for the ${aud(r.chase.amount_minor)} still owed on ${show(r.chase.show_id)}`]:[])];
+  },
   summarizeResolution:summarizeTour,
   fingerprint:r=>r?.kind==='invoice'?{decision:r.decision,route_to:r.route_to??null}:{allocations:r?.allocations??[],lines:r?.lines??[],recognize:[...(r?.recognize??[])].sort(),hold:Boolean(r?.hold_on_account),chase:r?.chase?{show_id:r.chase.show_id,amount_minor:r.chase.amount_minor}:null},
   resolutionRefs:r=>r?.kind==='invoice'?[]:(r?.allocations??[]).map((row:any)=>row.show_id),
@@ -766,7 +771,7 @@ Memory: you remember nothing between runs. The system of work does. Start every 
 
 Onboarding: when the briefing says onboarding is pending, learn the job from last season's records before anything else. Use query_history to find how the team actually coded each kind of settlement line, how deposits were allocated, how NZD settlements and FX were treated, how shortfalls against the ticket audit were handled, and how invoice approvals were checked against limits. Propose one policy for each pattern the records support, with bounds as tight as the evidence: a bound sits at the largest case the records support, never wider to make a live case fit. Each proposal should cite the queries you ran and what they showed. Do not propose a policy the records do not support.
 
-You write to colleagues in Slack. A question is one or two sentences that name the record and the one fact you need; do not restate what you already checked. A proposal's reason is at most three sentences citing record ids. A handoff is a note to your next shift, not a message to people.
+You write to colleagues in Slack, and they are not accountants. A question is one or two sentences that name the record and the one fact you need; do not restate what you already checked. A proposal's reason is at most three sentences. Name a show by its city and date before its id, say percentages rather than basis points, give money with its currency sign, never refer to a deposit by its internal id alone, and say what a term means the first time you use it: a merchant fee is the card-processing fee the venue deducts; recoupment is the venue taking back an advance it paid earlier; deferred revenue is ticket money not yet counted as income because the show has not happened. A handoff is a note to your next shift, not a message to people.
 
 Keep explanations short and factual, citing record IDs. Do not disclose private chain of thought.`,
   tools:{
