@@ -216,7 +216,8 @@ export function seedTourSettlements(w:World,count:number,random:()=>number,h:Wor
   w.approvers=APPROVERS.map(row=>({...row,simulated:true}));w.vendors=VENDORS.map(row=>({...row,simulated:true}));
   const history=controls.history?seedHistory(random):{shows:[],settlements:[],settlement_lines:[],deposits:[],allocations:[],invoices:[]};
   w.tourHistory={source:controls.history?'Imported from the previous season\'s settlement records at onboarding; read-only; simulated.':'No history was imported (benchmark ablation).',as_of:'2026-03-06T22:00:00.000Z',...history};
-  w.tours=[{id:'TR-2026-03',name:'Autumn arena run (simulated tour)',promoter_entity:'Live Nation Australasia',shows:LIVE_SHOWS.map(show=>show.id)}];
+  // The headliner is invented: the cities, the promoter, the posting and the accounting are real; no figure here is a claim about any real act's tour.
+  w.tours=[{id:'TR-2026-03',name:'Cold Harbour: autumn arena run 2026 (simulated tour)',headliner:'Cold Harbour (simulated act)',promoter_entity:'Live Nation Australasia',shows:LIVE_SHOWS.map(show=>show.id),simulated:true}];
   for(const show of LIVE_SHOWS){
     const venue=VENUES.find(v=>v.id===show.venue_id)!,gross=g(show),grossAud=Math.round(gross*(venue.currency==='NZD'?NZD_BOOK_RATE:1));
     w.shows.push({id:show.id,tour_id:'TR-2026-03',venue_id:venue.id,city:venue.city,country:venue.country,currency:venue.currency,date:show.date,status:show.status,...(show.rescheduled_to?{rescheduled_to:show.rescheduled_to}:{}),ticketing:'controlled',tickets_sold:show.tickets_sold,gross_box_office_minor:gross,gross_box_office_aud_minor:grossAud,booked_rate:venue.currency==='NZD'?NZD_BOOK_RATE:1,settled_minor:0,recognized_minor:0});
@@ -246,7 +247,8 @@ export function seedTourSettlements(w:World,count:number,random:()=>number,h:Wor
   w.seat={id:'seat-tour-settlements',title:'Tour Settlements Officer (Assistant Accountant)',company:w.name,
     one_line:`Fills Live Nation Australasia's Tour Settlements Officer seat (JR-93271): allocates each venue settlement deposit to its show, codes the settlement's lines to the ledger under policies learned from last season, checks tour invoices against approval limits before they are approved, and asks the Tour Accountant when the sources disagree.`,
     duties:['Allocate each venue deposit to the show settlement it pays and code the statement\'s lines to the GL','Recognize concert revenue only for shows that performed; money for postponed shows stays deferred','Check that each tour invoice\'s approver was within their limit, that it is not a duplicate and that its document is in the tour folder','Chase venues for gross below the ticket audit and deductions outside the contract','Prepare the music licence line for sign-off; load journals to the ledger through the gateway'],
-    people:[{id:'tour.accountant',name:'Tour Accountant (simulated)',title:'Tour Accountant',role:'accountant'},{id:'controller-local',name:'Touring Finance Director (simulated)',title:'Touring Finance Director',role:'controller'}],
+    // Invented people in real roles (JR-93271 names the roles, not the people); every surface marks them simulated when they act.
+    people:[{id:'tour.accountant',name:'Priya Nair',title:'Tour Accountant',role:'accountant',simulated:true},{id:'controller-local',name:'Marcus Hale',title:'Touring Finance Director',role:'controller',simulated:true}],
     access:{reads:['bank','netsuite (standing in for Oracle)','gmail'],writes:['journals through the gateway after approval','invoice compliance decisions after approval'],cannot:['approve its own work','approve policies or invoices','move money','change contracts, limits or simulation time']},
     sources:{real:['Tour Settlements Officer posting JR-93271','Settlement Manager posting JR-93290','Live Nation 2025 Form 10-K revenue recognition note and balance sheet','Live Nation 2025 free-cash reconciliation','Ticketmaster Standard Purchase Policy (US) §§14–16'],simulated:['venues, deal terms and settlement sheets','deposits and their references','approval-limit amounts and approvers','chart of accounts and GL codes','the past season','the music licence rate (controller parameter)'],digest:'docs/live-nation-sources.md'},
     autonomy:{enabled:false,auto_post:true,min_confidence:0.9,max_auto_minor:500_000_000},
@@ -729,6 +731,8 @@ How to judge:
 Memory: you remember nothing between runs. The system of work does. Start every run with get_briefing: your queue, the policies in force, recent feedback from people, and the last handoff. End every run with write_handoff: what you did, what is waiting on whom, and what the next shift should do first.
 
 Onboarding: when the briefing says onboarding is pending, learn the job from last season's records before anything else. Use query_history to find how the team actually coded each kind of settlement line, how deposits were allocated, how NZD settlements and FX were treated, how shortfalls against the ticket audit were handled, and how invoice approvals were checked against limits. Propose one policy for each pattern the records support, with bounds as tight as the evidence: a bound sits at the largest case the records support, never wider to make a live case fit. Each proposal should cite the queries you ran and what they showed. Do not propose a policy the records do not support.
+
+You write to colleagues in Slack. A question is one or two sentences that name the record and the one fact you need; do not restate what you already checked. A proposal's reason is at most three sentences citing record ids. A handoff is a note to your next shift, not a message to people.
 
 Keep explanations short and factual, citing record IDs. Do not disclose private chain of thought.`,
   tools:{

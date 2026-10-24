@@ -64,6 +64,11 @@ export function normalizeWork(w:World){
   for(const key of ['workItems','workLog','questions','policies','precedents','handoffs'])w[key]??=[];
   w.workSeq??={item:5531,question:1,policy:1,precedent:301,handoff:1,log:1,proposal:1};
   w.seat.ablation??={trust_agent_confidence:false,skip_backtest:false};
+  // Each simulated role is its own switch, so one seat can work with a real accountant and a simulated
+  // controller, or the reverse. `colleagues` stays as the summary and the older single switch.
+  w.seat.simulation??={};
+  if(typeof w.seat.simulation.accountant!=='boolean'){const on=Boolean(w.seat.simulation.colleagues);w.seat.simulation.accountant=on;w.seat.simulation.controller=on;}
+  w.seat.simulation.colleagues=Boolean(w.seat.simulation.accountant||w.seat.simulation.controller);
 }
 const clone=<T,>(value:T):T=>structuredClone(value);
 const snap=(item:any)=>({state:item.state,proposal:item.proposal?.id??null,decision:item.decision?.kind??null,approved_by:item.decision?.by??null,open_question:item.open_question_id??null,application:item.application_id??null,posting_error:item.posting_error?.code??null});
@@ -305,13 +310,18 @@ export function workAction(w:World,action:Action,actor:Actor,h:WorkHooks):{handl
     w.handoffs.push(handoff);h.emit('work.handoff_written',{handoff_id:handoff.id,run_id:handoff.run_id});return done({handoff});
   }
   if(type==='seat_configure'){
-    only(action,['enabled','auto_post','min_confidence','max_auto_minor','colleagues','ablation'],h);
+    only(action,['enabled','auto_post','min_confidence','max_auto_minor','colleagues','simulated_accountant','simulated_controller','ablation'],h);
     if(!can(actor,'configure',{kind:'seat'}))h.fail('work_permission_denied','Only the controller configures the seat',403);
     const before=clone(w.seat.autonomy),simulation=clone(w.seat.simulation),ablationBefore=clone(w.seat.ablation??{});
     for(const key of ['enabled','auto_post'] as const)if(action[key]!==undefined){if(typeof action[key]!=='boolean')h.fail('invalid_seat_setting',`${key} must be boolean`);w.seat.autonomy[key]=action[key];}
     if(action.min_confidence!==undefined){if(typeof action.min_confidence!=='number'||action.min_confidence<0.5||action.min_confidence>1)h.fail('invalid_seat_setting','min_confidence must be from 0.5 to 1');w.seat.autonomy.min_confidence=action.min_confidence;}
     if(action.max_auto_minor!==undefined)w.seat.autonomy.max_auto_minor=h.integer(action.max_auto_minor,'max_auto_minor',0,1e11);
-    if(action.colleagues!==undefined){if(typeof action.colleagues!=='boolean')h.fail('invalid_seat_setting','colleagues must be boolean');w.seat.simulation.colleagues=action.colleagues;}
+    for(const [key,role] of [['colleagues',undefined],['simulated_accountant','accountant'],['simulated_controller','controller']] as const){
+      if(action[key]===undefined)continue;
+      if(typeof action[key]!=='boolean')h.fail('invalid_seat_setting',`${key} must be boolean`);
+      if(role)w.seat.simulation[role]=action[key];else{w.seat.simulation.accountant=action[key];w.seat.simulation.controller=action[key];}
+    }
+    w.seat.simulation.colleagues=Boolean(w.seat.simulation.accountant||w.seat.simulation.controller);
     if(action.ablation!==undefined){
       const ablation=action.ablation;
       if(!ablation||typeof ablation!=='object'||Array.isArray(ablation)||Object.keys(ablation).some(key=>!['trust_agent_confidence','skip_backtest'].includes(key))||Object.values(ablation).some(value=>typeof value!=='boolean'))h.fail('invalid_seat_setting','ablation accepts trust_agent_confidence and skip_backtest booleans');

@@ -30,18 +30,20 @@ export function argonPhrase(options:{transport?:typeof fetch;signal?:AbortSignal
 }
 /** One colleague action per tick per company, the oldest waiting item first. */
 export async function colleagueTick(worldId:string,w:any,work:Work,phrase:Phrase){
-  if(!w.seat?.simulation?.colleagues)return null;
+  // Each role is simulated on its own switch; a role that is a real person is left alone.
+  const sim={accountant:Boolean(w.seat?.simulation?.accountant),controller:Boolean(w.seat?.simulation?.controller)};
+  if(!sim.accountant&&!sim.controller)return null;
   const d=domainFor(w),accountant=simAccountant(w),person=w.seat.people?.find((row:any)=>row.role==='accountant'),persona=person?`${person.name}, ${person.title} at ${w.seat.company??w.name}`:undefined;
   const say=(situation:string,what:string,truth:string)=>phrase(situation,what,truth,persona);
   const run=(input:any,actor:Actor,phrased:{phrased_by:string})=>({...work(worldId,input,actor,`sim:${crypto.randomUUID()}`,crypto.randomUUID()),phrased_by:phrased.phrased_by});
-  const question=w.questions.find((row:any)=>row.status==='open');
+  const question=w.questions.find((row:any)=>row.status==='open'&&(row.to_role==='controller'?sim.controller:sim.accountant));
   if(question){
     const item=w.workItems.find((row:any)=>row.id===question.work_item_id),entry=item&&d.caseFor(w,item);
     const truth=entry?.truth??(item?.kind==='follow_up'?'Send the reminder.':'I do not know anything more about this one; use your judgment and ask the controller if it is material.');
     const reply=await say('question',question.question,truth);
     return run({type:'work_answer',question_id:question.id,answer:reply.text},question.to_role==='controller'?SIM_CONTROLLER:accountant,reply);
   }
-  const waiting=w.workItems.filter((row:any)=>row.state==='proposed').sort((a:any,b:any)=>a.updated_at.localeCompare(b.updated_at))[0];
+  const waiting=sim.accountant?w.workItems.filter((row:any)=>row.state==='proposed').sort((a:any,b:any)=>a.updated_at.localeCompare(b.updated_at))[0]:undefined;
   if(waiting){
     if(waiting.kind==='follow_up')return run({type:'work_decide',work_item_id:waiting.id,decision:'approve',reason:'Fine, send the reminder.'},accountant,{phrased_by:'case-file'});
     const entry=d.caseFor(w,waiting);
@@ -50,13 +52,13 @@ export async function colleagueTick(worldId:string,w:any,work:Work,phrase:Phrase
     const reply=await say('rejection',waiting.proposal.reason,`No, that is not right. ${entry.truth}`);
     return run({type:'work_decide',work_item_id:waiting.id,decision:'reject',reason:reply.text},accountant,reply);
   }
-  const escalated=w.workItems.find((row:any)=>row.state==='escalated'&&d.proposableKinds.includes(row.kind));
+  const escalated=w.workItems.find((row:any)=>row.state==='escalated'&&d.proposableKinds.includes(row.kind)&&(row.escalation?.to_role==='controller'?sim.controller:sim.accountant));
   if(escalated){
-    const entry=d.caseFor(w,escalated);
-    if(!entry)return run({type:'work_close',work_item_id:escalated.id,reason:'Handled outside gram by the accountant.'},accountant,{phrased_by:'case-file'});
-    return run({type:'work_correct',work_item_id:escalated.id,...d.score.correction(entry),reason:`Resolved by the accountant: ${entry.truth}`},accountant,{phrased_by:'case-file'});
+    const entry=d.caseFor(w,escalated),who=escalated.escalation?.to_role==='controller'?SIM_CONTROLLER:accountant;
+    if(!entry)return run({type:'work_close',work_item_id:escalated.id,reason:'Handled outside gram by the accountant.'},who,{phrased_by:'case-file'});
+    return run({type:'work_correct',work_item_id:escalated.id,...d.score.correction(entry),reason:`Resolved by the accountant: ${entry.truth}`},who,{phrased_by:'case-file'});
   }
-  const policy=w.policies.find((row:any)=>row.status==='proposed');
+  const policy=sim.controller?w.policies.find((row:any)=>row.status==='proposed'):undefined;
   if(policy){
     const backtest=policy.backtest,bound=backtest.bound,fmt=(value:number)=>bound?.unit==='cents'?dollars(value):`${(value/100).toFixed(2)}%`;
     // The simulated controller reads the backtest the way a careful one would: no contrary cases, at least

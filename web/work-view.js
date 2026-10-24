@@ -74,7 +74,10 @@ export function renderWork(content, ctx) {
   const settings = card.folder('Autonomy and people', { open: false });
   settings.text('Posts without a person when', 'An approved policy covers it and confidence ≥ ' + percent(seat.autonomy.min_confidence) + ', up to ' + ctx.money(seat.autonomy.max_auto_minor));
   settings.slider('Confidence bar (%)', Math.round(seat.autonomy.min_confidence * 100), 50, 100, 1, value => ctx.work({ type: 'seat_configure', min_confidence: value / 100 }));
-  settings.toggle('Simulated colleagues (practice only)', Boolean(seat.simulation?.colleagues), value => ctx.work({ type: 'seat_configure', colleagues: value }));
+  // Each role is simulated on its own switch, so a real person can take one while the other is played from the case file.
+  const personTitle = role => (seat.people || []).find(person => person.role === role)?.title || role;
+  settings.toggle('Simulated ' + personTitle('accountant') + ' (practice only)', Boolean(seat.simulation?.accountant), value => ctx.work({ type: 'seat_configure', simulated_accountant: value }));
+  settings.toggle('Simulated ' + personTitle('controller') + ' (practice only)', Boolean(seat.simulation?.controller), value => ctx.work({ type: 'seat_configure', simulated_controller: value }));
   const slack = ctx.slack();
   if (slack?.available) settings.toggle('Ask and approve in Slack' + (slack.status?.connected ? '' : ' (connecting…)'), Boolean(slack.binding?.enabled), value => ctx.bindSlack(value));
   else settings.text('Slack', slack?.reason || 'Not configured');

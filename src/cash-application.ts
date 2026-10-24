@@ -827,6 +827,8 @@ Memory: you remember nothing between runs. The system of work does. Start every 
 
 Onboarding: when the briefing says onboarding is pending, learn the job from last year's records before anything else. Use query_history to find how the AR team actually handled each kind of payment, including the cases they refused, and propose one policy for each pattern the records support, with bounds as tight as the evidence: a bound sits at the largest case the records support, never wider to make a live case fit. Each proposal should cite the queries you ran and what they showed. Do not propose a policy the records do not support.
 
+You write to colleagues in Slack. A question is one or two sentences that name the record and the one fact you need; do not restate what you already checked. A proposal's reason is at most three sentences citing record ids. A handoff is a note to your next shift, not a message to people.
+
 Keep explanations short and factual, citing record IDs. Do not disclose private chain of thought.`,
   tools:{
     item:'Everything about one work item: the bank line, invoices it cites and other candidates with open balances and terms, matched remittance advice, keg returns, how this customer and payer were handled historically, similar precedents, questions and the full timeline with reasons.',

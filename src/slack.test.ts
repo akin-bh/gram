@@ -4,13 +4,13 @@ import {escapeSlack} from './slack.ts';
 
 const base='http://127.0.0.1:24300';
 const config={botToken:'xoxb-test',appToken:'xapp-test',channel:'C0AR',teamId:'T0KESTREL',accountants:new Set(['U0DANA']),controllers:new Set(['U0CTRL'])};
-async function fixture(){
+async function fixture(kind='cash-application'){
   const calls:{method:string;body:any}[]=[];let ts=1000;
   const transport=(async(url:string,init:any)=>{const method=String(url).split('/').pop()!,body=JSON.parse(init.body);calls.push({method,body});return Response.json({ok:true,channel:body.channel??'C0AR',ts:method==='chat.postMessage'?String(ts++):body.ts});}) as any;
   const service=await createService({database:':memory:',baseUrl:base,agentEnabled:false,seatIntervalMs:0,deliveryIntervalMs:0,slack:{config,transport,connect:false}});
   const page=await service.fetch(new Request(base)),cookie=page.headers.get('set-cookie')!.split(';')[0]!;
   const call=async(path:string,input?:any)=>{const response=await service.fetch(new Request(base+path,{method:input===undefined?'GET':'POST',headers:{Cookie:cookie,...(input===undefined?{}:{'Content-Type':'application/json','Idempotency-Key':crypto.randomUUID()})},...(input===undefined?{}:{body:JSON.stringify(input)})}));return {status:response.status,data:await response.json()};};
-  const id=(await call('/api/worlds',{kind:'cash-application',seed:42})).data.world.id;
+  const id=(await call('/api/worlds',{kind,seed:42})).data.world.id;
   const agent={id:`agent-world:${id}`,role:'agent' as const};
   const seat=(input:any)=>service.workCommand(id,input,agent,crypto.randomUUID(),crypto.randomUUID());
   const block=(user:string,action:string,value:any,message='')=>({type:'interactive',envelope_id:crypto.randomUUID(),payload:{type:'block_actions',team:{id:'T0KESTREL'},user:{id:user},trigger_id:`trigger-${crypto.randomUUID()}`,channel:{id:'C0AR'},message:{ts:message},actions:[{action_id:action,value:JSON.stringify(value)}]}});
@@ -29,7 +29,7 @@ test('cards are drawn from gram state; a person approves in Slack and the card s
     const posted=f.calls.filter(row=>row.method==='chat.postMessage');
     expect(posted.length).toBe(1);expect(posted[0]!.body.channel).toBe('C0AR');
     const text=JSON.stringify(posted[0]!.body.blocks);
-    expect(text).toContain('WI-5532');expect(text).toContain('gram_approve');expect(text).toContain('gram_reject');expect(text).toContain('Why it needs you');expect(text).toContain('no approved policy covers the bank fee');
+    expect(text).toContain('WI-5532');expect(text).toContain('gram_approve');expect(text).toContain('gram_reject');expect(text).toContain('Needs you');expect(text).toContain('no approved policy covers the bank fee');
     const proposal=f.world().workItems.find((row:any)=>row.id==='WI-5532').proposal.id;
     // An unmapped Slack user is refused and the refusal is audited.
     await f.slack.handle(f.block('U0STRANGER','gram_approve',{world:f.id,item:'WI-5532',proposal}));
@@ -87,5 +87,73 @@ test('a rejection needs a reason in a modal; a thread reply answers only its own
     // Other workspaces and unbound companies are ignored.
     await f.slack.handle({...f.block('U0CTRL','gram_approve',{world:'world-elsewhere',item:'WI-5531',proposal:'P-1'}),payload:{...f.block('U0CTRL','gram_approve',{}).payload,team:{id:'T0OTHER'}}});
     expect(escapeSlack('<!channel> & <https://x|y>')).toBe('&lt;!channel&gt; &amp; &lt;https://x|y&gt;');
+  }finally{await f.close();}
+});
+
+test('the tour seat posts the same cards in its own currency, and "@gram why" answers from the work log',async()=>{
+  const f=await fixture('tour-settlements');
+  try{
+    await f.call(`/api/worlds/${f.id}/work/slack`,{enabled:true});
+    await f.call(`/api/worlds/${f.id}/actions`,{type:'advance_time',hours:24});
+    const item=f.world().workItems.find((row:any)=>row.kind==='settlement_deposit');
+    f.seat({type:'work_propose',work_item_id:item.id,hold_on_account:true,confidence:0.5,reason:'Two statements, one deposit; holding until the split is confirmed.'});
+    await f.slack.reconcile(f.id);
+    const posted=f.calls.filter(row=>row.method==='chat.postMessage');
+    expect(posted.length).toBe(1);
+    const text=JSON.stringify(posted[0]!.body.blocks);
+    expect(text).toContain('A$');expect(text).toContain('Hold');expect(text).toContain('Tour Settlements Officer');expect(text).not.toContain('invoice_id');expect(text).toContain('the ledger');
+    // A mention in the channel is answered in its thread from the append-only log; ids match however they are typed.
+    const mention=(text:string,extra:any={})=>f.slack.handle({type:'events_api',envelope_id:crypto.randomUUID(),payload:{team_id:'T0KESTREL',event_id:`Ev${crypto.randomUUID()}`,event:{type:'app_mention',channel:'C0AR',user:'U0DANA',text,ts:'2000',...extra}}});
+    await mention(`<@U0BOT> why ${item.id.toLowerCase()}?`);
+    const answer=f.calls.at(-1)!;
+    expect(answer.method).toBe('chat.postMessage');expect(answer.body.thread_ts).toBe('2000');expect(answer.body.text).toContain(`Why ${item.id}`);expect(answer.body.text).toContain('propose');expect(answer.body.text).toContain('Open in gram');
+    expect(f.service.store.events(f.id,0,5000).some((event:any)=>event.type==='slack.explained'&&event.data.subject===item.id)).toBe(true);
+    await mention('<@U0BOT> why XX-9999');
+    expect(f.calls.at(-1)!.body.text).toMatch(/don't have a record/);
+    // A DM asks for status; the reply is the briefing, not a decision.
+    await f.slack.handle({type:'events_api',envelope_id:crypto.randomUUID(),payload:{team_id:'T0KESTREL',event_id:`Ev${crypto.randomUUID()}`,event:{type:'message',channel_type:'im',channel:'D0DM',user:'U0DANA',text:'status?',ts:'2001'}}});
+    const status=f.calls.at(-1)!;
+    expect(status.body.channel).toBe('D0DM');expect(status.body.thread_ts).toBeUndefined();expect(status.body.text).toContain('waiting on people 1');expect(status.body.text).toContain(item.id);
+    // The bot's own messages and duplicate event ids are ignored.
+    const before=f.calls.length;
+    await mention('<@U0BOT> why WI-5531',{bot_id:'B1'});
+    expect(f.calls.length).toBe(before);
+    expect(f.world().workItems.find((row:any)=>row.id===item.id).state).toBe('proposed');
+  }finally{await f.close();}
+});
+
+test('rules proposed together are one message the controller approves in one click; people speak in the thread under their names; handoffs stay in gram',async()=>{
+  const f=await fixture();
+  try{
+    await f.call(`/api/worlds/${f.id}/work/slack`,{enabled:true});
+    const run={id:`agent-world:${f.id}`,role:'agent' as const,runId:'run-onboarding'};
+    const propose=(rule:any,title:string)=>f.service.workCommand(f.id,{type:'policy_propose',rule,title,rationale:'Every comparable case last year was handled this way.',evidence:{queries:[{sql:'SELECT COUNT(*) FROM applied_lines',finding:'all agree'}]}},run as any,crypto.randomUUID(),crypto.randomUUID());
+    propose({kind:'exact_match'},'Apply exact referenced payments');propose({kind:'multi_invoice_split'},'Split one payment across cited invoices');propose({kind:'short_pay_writeoff',adjustment:'bank_fee',max_gap_minor:4500,channels:['wire']},'Wire fees up to $45');
+    f.seat({type:'handoff_write',summary:'Onboarding run: proposed three policies from last year\'s records.'});
+    await f.slack.reconcile(f.id);
+    const posted=f.calls.filter(row=>row.method==='chat.postMessage');
+    expect(posted.length).toBe(1);
+    const text=JSON.stringify(posted[0]!.body.blocks);
+    expect(text).toContain('3 rules');expect(text).toContain('gram_policies_approve');expect(text).not.toContain('handoff');expect(text).not.toContain('SELECT');
+    // The accountant cannot decide policy, in one click or many.
+    await f.slack.handle(f.block('U0DANA','gram_policies_approve',{world:f.id,group:'run:run-onboarding'}));
+    expect(f.world().policies.filter((row:any)=>row.status==='active').length).toBe(0);expect(f.calls.at(-1)!.body.text).toMatch(/refused/);
+    await f.slack.handle(f.block('U0CTRL','gram_policies_approve',{world:f.id,group:'run:run-onboarding'}));
+    expect(f.world().policies.every((row:any)=>row.status==='active'&&row.decided_by==='slack:U0CTRL')).toBe(true);
+    const update=f.calls.filter(row=>row.method==='chat.update').at(-1)!;
+    expect(JSON.stringify(update.body.blocks)).toContain('3 approved');expect(JSON.stringify(update.body.blocks)).not.toContain('gram_policies_approve');
+    // A simulated colleague's answer appears in the thread under her own name; the card shows who answered.
+    await f.call(`/api/worlds/${f.id}/actions`,{type:'advance_time',hours:48});
+    const asked=f.seat({type:'work_ask',work_item_id:'WI-5538',to_role:'accountant',question:'Pine & Post short-paid INV-2014 by $310. Valid deduction or chase?'});
+    await f.slack.reconcile(f.id);
+    const card=f.service.store.all('slack-cards').find((row:any)=>row.key===`question:${asked.result.question.id}`);
+    expect(JSON.stringify(f.calls.filter(row=>row.method==='chat.postMessage').at(-1)!.body.blocks)).toContain('AR lead, the seat asks');
+    f.service.workCommand(f.id,{type:'work_answer',question_id:asked.result.question.id,answer:'They returned a damaged half-barrel; hold the $310 pending the credit memo.'},{id:'sim:dana.ruiz',role:'accountant'} as any,crypto.randomUUID(),crypto.randomUUID());
+    await f.slack.reconcile(f.id);
+    const said=f.calls.filter(row=>row.method==='chat.postMessage').at(-1)!;
+    expect(said.body.thread_ts).toBe(card.ts);expect(said.body.username).toContain('Dana Ruiz');expect(said.body.text).toContain('half-barrel');
+    expect(JSON.stringify(f.calls.filter(row=>row.method==='chat.update').at(-1)!.body.blocks)).toContain('Answered by Dana Ruiz');
+    // Said once: a later redraw does not repeat it.
+    const before=f.calls.length;await f.slack.reconcile(f.id);expect(f.calls.length).toBe(before);
   }finally{await f.close();}
 });
