@@ -26,6 +26,7 @@ export const TRANSITIONS:Record<string,Record<string,string>>={
   correct:{new:'approved',proposed:'approved',needs_info:'approved',answered:'approved',rejected:'approved',escalated:'approved'},
   escalate:{new:'escalated',answered:'escalated',rejected:'escalated',proposed:'escalated',needs_info:'escalated'},
   post:{approved:'posted'},
+  reverse:{posted:'reversed'},
   bounce:{approved:'rejected'},
   wake:{scheduled:'new'},
   close:{scheduled:'closed',new:'closed',escalated:'closed',answered:'closed',rejected:'closed',needs_info:'closed'},
@@ -34,8 +35,8 @@ export const TRANSITIONS:Record<string,Record<string,string>>={
 export const ROLES:Record<WorkRole,Record<string,string[]>>={
   sync:{work_item:['create','wake','close']},
   ai_agent:{work_item:['propose','ask','escalate'],policy:['propose'],handoff:['write']},
-  accountant:{work_item:['answer','guide','approve','reject','correct','close']},
-  controller:{work_item:['answer','guide','approve','reject','correct','close'],policy:['approve','reject','retire'],seat:['configure']},
+  accountant:{work_item:['answer','guide','approve','reject','correct','close','reverse']},
+  controller:{work_item:['answer','guide','approve','reject','correct','close','reverse'],policy:['approve','reject','retire'],seat:['configure']},
   policy_engine:{work_item:['approve']},
   gateway:{work_item:['post','bounce','close','create'],seat:['onboarded']},
   /** The host's scheduler. When the seat leaves an item untouched twice, the dispatcher hands it to a
@@ -54,8 +55,8 @@ export function can(actor:Actor,action:string,resource:{kind:string;proposed_by?
   if(action==='approve'&&resource.proposed_by&&resource.proposed_by===actor.id)return false; // separation of duties
   return true;
 }
-export const workActionTypes=['work_propose','work_ask','work_escalate','work_answer','work_guide','work_decide','work_correct','work_close','policy_propose','policy_decide','policy_retire','handoff_write','seat_configure','seat_onboarded','work_retry_posting'] as const;
-export const humanWorkActions=['work_answer','work_guide','work_decide','work_correct','work_close'];
+export const workActionTypes=['work_propose','work_ask','work_escalate','work_answer','work_guide','work_decide','work_correct','work_reverse','work_close','policy_propose','policy_decide','policy_retire','handoff_write','seat_configure','seat_onboarded','work_retry_posting'] as const;
+export const humanWorkActions=['work_answer','work_guide','work_decide','work_correct','work_reverse','work_close'];
 export const controllerWorkActions=['policy_decide','policy_retire','seat_configure'];
 export const agentWorkActions=['work_propose','work_ask','work_escalate','policy_propose','handoff_write'];
 
@@ -250,6 +251,21 @@ export function workAction(w:World,action:Action,actor:Actor,h:WorkHooks):{handl
     const precedent=recordPrecedent(w,d,item,'correction',actor,{decision:'correct',reason,resolution},h);
     return done({work_item:item,precedent,...gatewayPost(w,item,h)});
   }
+  if(type==='work_reverse'){
+    // Reverse and repost, never delete: the gateway posts the reversing entry, the records go back, the reversal
+    // is linked to the original, and the record returns to the seat's queue as a new item with that history.
+    only(action,['work_item_id','reason'],h);permitted(actor,'reverse','work_item',h);
+    const item=findItem(w,action.work_item_id,h),reason=text(action.reason,'reason',h,2000,3);
+    if(item.state!=='posted')h.fail('invalid_transition',`Cannot reverse ${item.id} while it is ${item.state}`,409);
+    const posting=d.postingFor(w,item);if(!posting||!d.reverse)h.fail('nothing_to_reverse',`${item.id} has no posting this seat can reverse`,409);
+    const reversal=d.reverse(w,item,posting,reason,actor,h);
+    transition(w,item,'reverse',actor,{patch:{reversal:{id:reversal.id,journal_id:reversal.journal_id??null,by:actor.id,reason,at:w.now}},reason,refs:reversal.refs,evidence:[posting.id,...reversal.evidence]},h);
+    for(const followUp of w.workItems.filter((row:any)=>row.kind==='follow_up'&&['scheduled','new'].includes(row.state)&&(row.id===posting.follow_up_item_id||row.refs?.includes(posting.id))))transition(w,followUp,'close',GATEWAY,{reason:`${item.id} was reversed`,refs:[reversal.id]},h);
+    const again=createWorkItem(w,{kind:item.kind,title:item.title,subject_id:item.subject_id,refs:[...new Set([...(item.refs??[]),item.id,reversal.id])],...(item.amount_minor!==undefined?{amount_minor:item.amount_minor}:{}),reason:`Reposting after ${item.id} was reversed: ${reason}`},GATEWAY,h);
+    again.reversed_from=item.id;item.reposted_as=again.id;
+    const precedent=recordPrecedent(w,d,item,'correction',actor,{decision:'reverse',reason},h);
+    return done({work_item:item,reversal,reposted_as:again.id,precedent});
+  }
   if(type==='work_close'){
     only(action,['work_item_id','reason'],h);permitted(actor,'close','work_item',h);
     const item=findItem(w,action.work_item_id,h),reason=text(action.reason,'reason',h,2000,3);
@@ -366,7 +382,7 @@ function compactPolicy(policy:any){return {id:policy.id,version:policy.version,s
 export function workBriefing(w:World){
   normalizeWork(w);
   const d=domainFor(w);
-  const counts=Object.fromEntries(['new','proposed','needs_info','answered','rejected','approved','posted','escalated','scheduled','closed'].map(state=>[state,w.workItems.filter((item:any)=>item.state===state).length]));
+  const counts=Object.fromEntries(['new','proposed','needs_info','answered','rejected','approved','posted','reversed','escalated','scheduled','closed'].map(state=>[state,w.workItems.filter((item:any)=>item.state===state).length]));
   const feedback=w.precedents.slice(-10).reverse().map((row:any)=>({id:row.id,at:row.at,work_item_id:row.work_item_id,source:row.source,by:row.human.by,decision:row.human.decision,reason:row.human.reason,subject_ids:row.features?.customer_ids??row.features?.subject_ids??[]}));
   return {seat:{title:w.seat.title,company:w.seat.company,one_line:w.seat.one_line,duties:w.seat.duties,people:w.seat.people,access:w.seat.access,autonomy:w.seat.autonomy,onboarding:w.seat.onboarding},now:w.now,counts,
     your_queue:agentQueue(w).map(compactItem),waiting_on_people:waitingOnPeople(w).map(compactItem),blocked_postings:w.workItems.filter((item:any)=>item.posting_error).map(compactItem),

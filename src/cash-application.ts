@@ -110,7 +110,7 @@ export function parseRemittance(text:string){
 
 export function normalizeCashApplication(w:World){
   if(w.kind!==CASH_KIND)return;
-  for(const key of ['bankReceipts','cashApplications','kegReturns','bankFeed','cashCaseKey'])w[key]??=[];
+  for(const key of ['bankReceipts','cashApplications','cashReversals','kegReturns','bankFeed','cashCaseKey'])w[key]??=[];
   w.cashHistory??={invoices:[],receipts:[],applications:[],keg_returns:[]};
 }
 
@@ -659,6 +659,29 @@ export function postApplication(w:World,item:any,receipt:any,resolution:Resoluti
   return application;
 }
 
+/** The gateway's reversing write: the application's journal mirrored, the invoices and the receipt put
+ * back, returned kegs released, the reversal linked to the application it undoes. */
+export function reverseApplication(w:World,item:any,application:any,reason:string,actor:Actor,h:CashHooks){
+  const receipt=h.find(w.bankReceipts,application.receipt_id,'Bank receipt'),applied=sum(application.allocations.map((row:any)=>row.amount_minor)),adjusted=sum(application.adjustments.map((row:any)=>row.amount_minor)),closed=applied+adjusted;
+  const reversal:any={id:h.id('car'),application_id:application.id,work_item_id:item.id,receipt_id:receipt.id,reason,by:actor.id,at:w.now,posted_by:'gateway'};
+  if(closed){
+    const totals=application.adjustments.reduce((map:Record<string,number>,row:any)=>{map[row.account_id]=(map[row.account_id]??0)+row.amount_minor;return map;},{});
+    const lines=[{account_id:'receivables',debit_minor:closed},...(applied?[{account_id:'unapplied-cash',credit_minor:applied}]:[]),...Object.entries(totals).map(([account_id,amount])=>({account_id,credit_minor:amount as number}))];
+    const operation=h.effect('cash_application_reversal',reversal.id,closed,lines,`cash-application-reversal:${item.id}`,0);reversal.operation_id=operation.id;reversal.journal_id=operation.journal_id??null;
+  }
+  for(const row of application.allocations){
+    const invoice=h.find(w.invoices,row.invoice_id,'Invoice'),adjustedHere=sum(application.adjustments.filter((line:any)=>line.invoice_id===invoice.id).map((line:any)=>line.amount_minor));
+    invoice.amount_cash_applied_minor=Math.max(0,(invoice.amount_cash_applied_minor??0)-row.amount_minor);invoice.amount_adjusted_minor=Math.max(0,(invoice.amount_adjusted_minor??0)-adjustedHere);
+    invoice.amount_paid_minor=Math.max(0,invoice.amount_paid_minor-row.amount_minor-adjustedHere);invoice.status=invoice.amount_paid_minor>=invoice.amount_minor?'paid':invoice.amount_paid_minor>0?'partially_paid':'open';
+    invoice.applications=(invoice.applications??[]).filter((id:string)=>id!==application.id);
+  }
+  for(const taken of application.keg_returns??[]){const rma=w.kegReturns.find((row:any)=>row.id===taken.id);if(rma)rma.consumed_kegs=Math.max(0,rma.consumed_kegs-taken.kegs);}
+  receipt.applied_minor-=applied;receipt.adjusted_minor-=adjusted;receipt.unapplied_minor+=applied;receipt.status=receipt.applied_minor>0?'partially_applied':'unapplied';
+  application.reversed_by=reversal.id;w.cashReversals.push(reversal);
+  h.emit('cash.reversed',{reversal_id:reversal.id,application_id:application.id,work_item_id:item.id,reason});
+  return {id:reversal.id,journal_id:reversal.journal_id??null,refs:[reversal.id,...application.allocations.map((row:any)=>row.invoice_id),...(reversal.journal_id?[reversal.journal_id]:[])],evidence:[reversal.id]};
+}
+
 /** Read-only tables for the history query tool, shaped like an ERP export. */
 export function historyTables(w:World){
   const names=new Map<string,string>(w.customers.map((customer:any)=>[customer.id,customer.name]));
@@ -747,6 +770,7 @@ export const cashDomain:SeatDomain=registerDomain({
       follow_ups:resolution.chase?[{kind:'follow_up',state:'scheduled',title:`Follow up ${resolution.chase.invoice_id} short-pay ${dollars(resolution.chase.amount_minor)}`,subject_id:resolution.chase.invoice_id,refs:[resolution.chase.invoice_id,application.id,...(application.notice_message_id?[application.notice_message_id]:[])],amount_minor:resolution.chase.amount_minor,due_at:new Date(Date.parse(w.now)+7*DAY).toISOString(),reason:'Short-pay notice sent; check again in seven days'}]:[],
       close_follow_ups_for:paid});
   },
+  reverse:(w,item,posting,reason,actor,h)=>reverseApplication(w,item,posting,reason,actor,h as any),
   reminder(w,item,h){
     const invoice=h.find(w.invoices,item.subject_id,'Invoice'),customer=h.find(w.customers,invoice.customer_id,'Customer');
     const message=h.mail({direction:'outbound',to:[customer.email],subject:`Reminder: ${invoice.id} balance ${dollars(openOf(invoice))}`,body:item.proposal.reminder,source_refs:[invoice.id,item.id]});

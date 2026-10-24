@@ -19,7 +19,7 @@ import type {SeatMode} from './seat.ts';
 import {agentQueue,agentWorkActions,controllerWorkActions,humanWorkActions,precedentSearch,whyTimeline,workBriefing,workItemView,GATEWAY,DISPATCHER} from './work.ts';
 import {queryHistory,HistoryQueryError} from './history-sql.ts';
 import {scoreSeat} from './cash-score.ts';
-import {domainByKind,domainFor} from './domains.ts';
+import {domainByKind,domainFor,seatKinds} from './domains.ts';
 import {SlackBridge,loadSlackConfig} from './slack.ts';
 import {argonPhrase,colleagueTick} from './colleague.ts';
 import type {SlackDeps} from './slack.ts';
@@ -202,7 +202,7 @@ export async function createService(options: ServiceOptions = {}) {
     const world=store.world(id);if(!world.seat)return undefined;
     const connections=oauth.connections(id),missing=domainFor(world).seatSystems.filter(system=>connections.find((row:any)=>row.system===system)?.status!=='connected'),state=stateFor(id);
     const running=store.all('runs').find((row:any)=>row.world===id&&row.status==='running');
-    return {on_duty:Boolean(world.seat.autonomy.enabled),agent_available:Boolean(options.seatRunner)||config().available,model:config().seatModel,effort:config().seatEffort,missing_connections:missing,running_run:running?.id??null,stalled_items:stalled(id),retry_at:state.retryAt>Date.now()?new Date(state.retryAt).toISOString():null,runs_last_hour:state.starts.filter(at=>at>Date.now()-3_600_000).length,max_runs_per_hour:options.maxSeatRunsPerHour??12};
+    return {on_duty:Boolean(world.seat.autonomy.enabled),systems:domainFor(world).seatSystems,agent_available:Boolean(options.seatRunner)||config().available,model:config().seatModel,effort:config().seatEffort,missing_connections:missing,running_run:running?.id??null,stalled_items:stalled(id),retry_at:state.retryAt>Date.now()?new Date(state.retryAt).toISOString():null,runs_last_hour:state.starts.filter(at=>at>Date.now()-3_600_000).length,max_runs_per_hour:options.maxSeatRunsPerHour??12};
   }
   /** Work starts itself: a new bank line, an answer or a rejection puts an item in the
    * seat's queue, and the dispatcher launches a run for it without anyone asking. */
@@ -283,7 +283,7 @@ export async function createService(options: ServiceOptions = {}) {
     }
     if (path === '/api/bootstrap' && method === 'GET') {
       requireController(actor);
-      return json({ worlds: store.worlds().map(({ id, name, kind, now, revision }) => ({ id, name, kind, now, revision })), scenarios: scenarioCatalog, systems: systemCatalog, agent: config(),generator:generationConfig(), slack: slack ? { available: true, ...slack.status() } : { available: false, reason: slackSetup.reason } });
+      return json({ worlds: store.worlds().map(({ id, name, kind, now, revision }) => ({ id, name, kind, now, revision })), scenarios: scenarioCatalog, seats: seatKinds(), systems: systemCatalog, agent: config(),generator:generationConfig(), slack: slack ? { available: true, ...slack.status() } : { available: false, reason: slackSetup.reason } });
     }
     if (path === '/api/oauth/clients' && method === 'POST') { requireController(actor);const input=await body(request),authorized=currentActor(request,actor);requireController(authorized);return json(oauth.register(input),201); }
     if (path === '/api/worlds' && method === 'POST') {

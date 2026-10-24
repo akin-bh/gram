@@ -157,3 +157,24 @@ test('rules proposed together are one message the controller approves in one cli
     const before=f.calls.length;await f.slack.reconcile(f.id);expect(f.calls.length).toBe(before);
   }finally{await f.close();}
 });
+
+test('a card nobody touches is nudged in its thread, then handed to the controller by the dispatcher',async()=>{
+  const f=await fixture();
+  try{
+    await f.call(`/api/worlds/${f.id}/work/slack`,{enabled:true});
+    await f.call(`/api/worlds/${f.id}/actions`,{type:'advance_time',hours:24});
+    f.seat({type:'work_propose',work_item_id:'WI-5532',allocations:[{invoice_id:'INV-2003',amount_minor:5797500}],adjustments:[{invoice_id:'INV-2003',kind:'bank_fee',amount_minor:2500}],confidence:0.9,reason:'Wire short by $25; history books these to bank fees.'});
+    await f.slack.reconcile(f.id);
+    const start=Date.now(),posts=()=>f.calls.filter(row=>row.method==='chat.postMessage');
+    expect(posts().length).toBe(1);
+    f.slack.deps.now=()=>start+11*60_000;await f.slack.reconcile(f.id);
+    const nudge=posts().at(-1)!;
+    expect(posts().length).toBe(2);expect(nudge.body.thread_ts).toBe('1000');expect(nudge.body.text).toContain('<@U0DANA>');expect(nudge.body.text).toContain('WI-5532');
+    await f.slack.reconcile(f.id);expect(posts().length).toBe(2); // one nudge, not one per tick
+    f.slack.deps.now=()=>start+22*60_000;await f.slack.reconcile(f.id);await f.slack.reconcile(f.id);
+    const item=f.world().workItems.find((row:any)=>row.id==='WI-5532');
+    expect(item.state).toBe('escalated');expect(item.escalation).toMatchObject({to_role:'controller'});
+    expect(f.world().workLog.some((row:any)=>row.subject==='WI-5532'&&row.action==='escalate'&&row.role==='dispatcher')).toBe(true);
+    expect(JSON.stringify(posts().at(-1)!.body.blocks)).toContain('Escalated to the Controller');
+  }finally{await f.close();}
+});

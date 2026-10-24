@@ -18,7 +18,7 @@ import {readFileSync} from 'node:fs';
 import type {Store} from './store.ts';
 import type {Actor} from './oauth.ts';
 import {domainFor} from './seat-domain.ts';
-import {whyTimeline,workBriefing} from './work.ts';
+import {DISPATCHER,whyTimeline,workBriefing} from './work.ts';
 
 const ENV_FILE=Bun.fileURLToPath(new URL('../.env',import.meta.url));
 export type SlackConfig={botToken:string;appToken:string;channel:string;teamId?:string;accountants:Set<string>;controllers:Set<string>};
@@ -169,8 +169,32 @@ export class SlackBridge{
           else{const posted=await this.api('chat.postMessage',{channel:binding.channel,text:card.text,blocks:card.blocks,unfurl_links:false});this.deps.store.put('slack-cards',id,{world:worldId,key:card.key,kind:card.kind,channel:posted.channel,ts:posted.ts,digest,final:card.final,posted_at:new Date().toISOString()});}
         }catch(error){this.lastError=String(error);this.deps.store.audit(worldId,'slack.delivery_failed',{card:card.key,error:String(error)},'slack');}
       }
+      await this.chase(worldId);
     }).catch(error=>{this.lastError=String(error);});
     return this.queue;
+  }
+  /** Approvers are busy. A card nobody has touched gets one nudge in its thread; one still waiting as long
+   * again is handed to the controller by the dispatcher, a logged step the seat sees in its briefing. */
+  private async chase(worldId:string){
+    const now=(this.deps.now??Date.now)(),minutes=Math.max(1,Number(process.env.SLACK_NUDGE_MINUTES??'10')||10),wait=minutes*60_000;
+    const mention=(set:Set<string>)=>[...set].slice(0,3).map(user=>`<@${user}>`).join(' ');
+    for(const record of this.deps.store.all('slack-cards').filter((row:any)=>row.world===worldId&&!row.final&&!row.suppressed&&row.ts&&row.posted_at&&(row.kind==='proposal'||row.kind==='question'))){
+      let w:any;try{w=this.deps.world(worldId);}catch{return;}
+      const questionId=record.kind==='question'?String(record.key).slice('question:'.length):undefined,question=questionId?w.questions.find((row:any)=>row.id===questionId):undefined;
+      const item=w.workItems.find((row:any)=>row.id===(record.kind==='proposal'?String(record.key).split(':')[1]:question?.work_item_id));
+      if(!item||!['proposed','needs_info'].includes(item.state))continue;
+      const id=`${worldId}:${record.key}`,role=question?.to_role??item.awaiting?.role??'accountant',age=now-Date.parse(record.posted_at);
+      if(!record.nudged_at&&age>=wait){
+        const who=mention(role==='controller'?this.deps.config.controllers:this.deps.config.accountants)||mention(this.deps.config.controllers);
+        try{await this.api('chat.postMessage',{channel:record.channel,thread_ts:record.ts,text:`${who?`${who} `:''}still waiting on ${item.id} after ${minutes} minutes.`,unfurl_links:false});}
+        catch(error){this.lastError=String(error);continue;}
+        this.deps.store.put('slack-cards',id,{...record,nudged_at:new Date(now).toISOString()});
+      }else if(record.nudged_at&&!record.escalated_at&&role!=='controller'&&now-Date.parse(record.nudged_at)>=wait){
+        try{this.deps.work(worldId,{type:'work_escalate',work_item_id:item.id,to_role:'controller',reason:`No answer from the ${role} in ${2*minutes} minutes; handed to the controller by the dispatcher.`},DISPATCHER,`slack:chase:${item.id}:${record.nudged_at}`,crypto.randomUUID());}
+        catch(error){this.lastError=String(error);}
+        this.deps.store.put('slack-cards',id,{...record,escalated_at:new Date(now).toISOString()});
+      }
+    }
   }
   /** A simulated colleague speaks under her own name (chat:write.customize); anyone else is quoted by gram. */
   private async sayInThread(channel:string,ts:string,reply:Reply){

@@ -399,7 +399,7 @@ function render() {
     });
   }
   const selected = activePane(); useContext({ world: spaceId(), pane: selected.id, tab: selected.activeTabId });
-  if (workspace.settings.assistantOpen && state.snapshot && !(narrowScreen.matches && mobileRailOpen)) renderAssistant(layout);
+  if (workspace.settings.assistantOpen && state.snapshot && !world().seat && !(narrowScreen.matches && mobileRailOpen)) renderAssistant(layout);
   const toast = child(root, 'status-toast' + (state.notice === 'Ready' ? ' quiet' : ''), 'status', null); toast.host.dataset.error = String(Boolean(state.noticeError)); statusControl = toast.text('Activity', state.notice);
   toast.action('Dismiss', () => notify('Ready'), { icon: 'close', className: 'icon-button' });
   const announcement = root.slot('sr-only'); announcement.id = 'gram-announcement'; announcement.setAttribute('role', 'status'); announcement.setAttribute('aria-live', state.noticeError ? 'assertive' : 'polite'); announcement.textContent = state.notice === 'Ready' ? '' : state.notice;
@@ -434,19 +434,19 @@ function renderSidebar() {
   const actions = child(head, 'rail-actions');
   actions.action('Collapse sidebar', toggleSidebar, { icon: 'sidebar', className: 'icon-button' });
   actions.action('Search workspace', () => openSearch(), { icon: 'search', className: 'icon-button', title: 'Search workspace · ⌘K' });
-  actions.action('Toggle assistant', toggleAssistant, { icon: 'agent', className: 'icon-button', active: workspace.settings.assistantOpen, disabled: !state.world });
+  if (!world().seat) actions.action('Toggle assistant', toggleAssistant, { icon: 'agent', className: 'icon-button', active: workspace.settings.assistantOpen, disabled: !state.world });
   const company = child(rail, 'space-select');
   company.select('Company', state.world, choices(list(state.boot?.worlds)), id => void perform('Switch company', () => chooseWorld(id)));
   rail.action('New message', () => openCompose(), { icon: 'plus', disabled: !state.world });
   const scroll = child(rail, 'rail-scroll');
   const nav = child(scroll, 'rail-nav');
   const selected = currentTab();
-  for (const view of ['overview', ...(world().seat ? ['work'] : []), 'mailbox', 'documents', 'finance', 'procurement']) {
+  for (const view of (world().seat ? ['work', 'mailbox', 'finance', 'audit'] : ['overview', 'mailbox', 'documents', 'finance', 'procurement'])) {
     const count = view === 'work' ? records('workItems').filter(item => ['proposed', 'needs_info', 'escalated'].includes(item.state)).length || undefined : view === 'mailbox' ? records('messages').length : view === 'documents' ? records('documents').length : view === 'favorites' ? space().favorites.length : undefined;
     nav.action(labels[view], () => go(view), { icon: view === 'documents' ? 'files' : view === 'favorites' ? 'star' : view, active: selected?.view === view && selected.kind === 'view', meta: count, disabled: !state.world && view !== 'overview' });
   }
   const tools = scroll.folder('Tools', { open: false }); tools.host.classList.add('rail-nav');
-  for (const view of ['connections', 'sources', 'agent', 'delivery', 'audit']) tools.action(labels[view], () => go(view), { icon: view === 'connections' ? 'external' : view, disabled: !state.world });
+  for (const view of (world().seat ? ['connections'] : ['connections', 'sources', 'agent', 'delivery', 'audit'])) tools.action(labels[view], () => go(view), { icon: view === 'connections' ? 'external' : view, disabled: !state.world });
   if (space().favorites.length) {
     const favorites = scroll.folder('Favorites'); favorites.host.classList.add('rail-nav');
     for (const favorite of space().favorites.slice(0, 8)) favorites.action(favorite.title, () => openRecord(favorite), { icon: favorite.collection === 'messages' ? 'mail' : 'file' });
@@ -891,22 +891,26 @@ async function connect(system) {
   sessionStorage.setItem('finance-world-return-view', state.view); location.assign(result.authorization_url);
 }
 function renderConnections() {
+  // A seat company reaches only the systems its seat reads; the wider catalog belongs to the older simulations.
+  const seatSystems = world().seat ? (state.seatStatus?.systems || []) : null, available = () => seatSystems ? systems().filter(s => seatSystems.includes(s.id)) : systems();
   const pane = content.folder('Connections', { root: true });
-  pane.buttons([['Connect core systems', async () => {
-    const queue = [...['stripe', 'mercury', 'netsuite', 'gmail', 'google-drive', 'ticketing', 'ledger', 'bank'], ...(world().kind === 'procurement-matching' ? ['zip'] : [])].filter(id => systems().some(system => system.id === id) && !state.snapshot.connections.some(c => c.system === id && c.status === 'connected'));
-    if (!queue.length) { notify('All core systems are connected.'); return; }
+  if (seatSystems) pane.text('This seat', 'Reads ' + seatSystems.join(' and ') + ' through connections the controller grants. Writes go through the gateway after approval. Revoke a source and the seat can neither read it nor be launched; the attempt is audited.').host.classList.add('prose');
+  pane.buttons([['Connect ' + (seatSystems ? 'the seat\'s systems' : 'core systems'), async () => {
+    const queue = (seatSystems || [...['stripe', 'mercury', 'netsuite', 'gmail', 'google-drive', 'ticketing', 'ledger', 'bank'], ...(world().kind === 'procurement-matching' ? ['zip'] : [])]).filter(id => systems().some(system => system.id === id) && !state.snapshot.connections.some(c => c.system === id && c.status === 'connected'));
+    if (!queue.length) { notify('All ' + (seatSystems ? 'of the seat\'s' : 'core') + ' systems are connected.'); return; }
     sessionStorage.setItem(queueKey(), JSON.stringify(queue)); await connect(queue[0]);
   }]]);
-  const d = draft('connection', { system: 'stripe' });
-  pane.select('Source system', d.system, choices(systems()), value => { d.system = value; render(); });
+  const d = draft('connection', { system: seatSystems?.[0] || 'stripe' });
+  if (seatSystems && !seatSystems.includes(d.system)) d.system = seatSystems[0];
+  pane.select('Source system', d.system, choices(available()), value => { d.system = value; render(); });
   const system = systems().find(s => s.id === d.system), connection = state.snapshot.connections.find(c => c.system === d.system);
   pane.text('Connection', connection?.status || 'disconnected'); pane.text('Availability', world().faults[d.system]?.mode || 'healthy');
   pane.folder('Feeds', { open: false }).text('Available', system?.feeds.join(', '));
   pane.buttons([['Connect ' + system.name, () => connect(d.system)], ['Revoke access', async () => { await post(path('/connections/' + d.system + '/revoke')); await refresh(); notify(system.name + ' access revoked.'); }, connection?.status !== 'connected']]);
   const inventory = content.folder('Connection inventory', { root: true });
-  for (const category of [...new Set(systems().map(s => s.category))]) {
+  for (const category of [...new Set(available().map(s => s.category))]) {
     const group = inventory.folder(category, { open: false });
-    for (const system of systems().filter(s => s.category === category)) {
+    for (const system of available().filter(s => s.category === category)) {
       const c = state.snapshot.connections.find(c => c.system === system.id);
       group.buttons([[system.name + ' · ' + (c?.status || 'disconnected'), () => { d.system = system.id; render(); }]]);
     }
@@ -1273,6 +1277,7 @@ function workContext() {
     openItem: item => openRecord({ collection: 'workItems', recordId: item.id, title: item.id + ' · ' + item.title, view: 'work' }),
     rerender: () => { if (state.busy || rendering) deferredRender = true; else render(); },
     connect: async missing => { sessionStorage.setItem(queueKey(), JSON.stringify(missing)); await connect(missing[0]); },
+    revoke: async system => { await post(path('/connections/' + system + '/revoke')); await refresh(); notify(system + ' access revoked; the seat cannot read it or be launched until the controller reconnects it.'); },
     startShift: async () => { await post(path('/agent'), { instruction: 'Work the queue now.' }); await refresh(); notify('Shift started'); },
     bindSlack: async enabled => { await post(path('/work/slack'), { enabled }); await refresh(); notify(enabled ? 'Slack connected for this company' : 'Slack disconnected'); },
   };
@@ -1333,10 +1338,10 @@ function renderAudit() {
   renderAuditView(content, auditOptions(draft('audit-view', { query: '', scope: 'activity', selected: null, expanded: [], raw: false, reading: false }), content));
 }
 function renderCreate() {
-  const d = draft('create', { name: '', kind: 'ticket-cancellation', seed: '42', orderCount: 24, cash: '', threshold: '', cancelEvent: true, narrative: '' });
+  const d = draft('create', { name: '', kind: 'tour-settlements', seed: '42', orderCount: 24, cash: '', threshold: '', cancelEvent: true, narrative: '' });
   const pane = content.folder('New company', { root: true });
   pane.text('Company name', d.name, value => d.name = value);
-  pane.select('Scenario', d.kind, state.boot.scenarios.map(s => ({ value: s.kind, label: s.name })), value => { d.kind = value; d.orderCount = value === 'procurement-matching' && !d.recordCountEdited ? 4 : Math.min(d.orderCount, value === 'ticket-cancellation' ? 2000 : 200); state.generated = null; render(); });
+  pane.select('Scenario', d.kind, [...state.boot.scenarios].sort((a, b) => Number((state.boot.seats || []).includes(b.kind)) - Number((state.boot.seats || []).includes(a.kind))).map(s => ({ value: s.kind, label: ((state.boot.seats || []).includes(s.kind) ? 'Seat · ' : 'Other simulation · ') + s.name })), value => { d.kind = value; d.orderCount = value === 'procurement-matching' && !d.recordCountEdited ? 4 : Math.min(d.orderCount, value === 'ticket-cancellation' ? 2000 : 200); state.generated = null; render(); });
   pane.folder('Scenario details', { open: false }).text('Description', state.boot.scenarios.find(s => s.kind === d.kind)?.description);
   pane.text('Seed', d.seed, value => d.seed = value);
   pane.slider(d.kind === 'procurement-matching' ? 'Purchase orders' : 'Record count', d.orderCount, 1, d.kind === 'ticket-cancellation' ? 2000 : 200, 1, value => { d.orderCount = value; d.recordCountEdited = true; });
@@ -1351,7 +1356,7 @@ function renderCreate() {
     if (d.narrative.trim()) input.narrative = d.narrative.trim(); else delete input.narrative;
     if (d.cash !== '') { delete input.startingCashMinor; input.initialCashMinor = optionalMoney(d.cash); }
     if (d.threshold !== '') input.approvalThresholdMinor = optionalMoney(d.threshold);
-    const result = await post('/api/worlds', input); state.boot = await api('/api/bootstrap'); state.view = 'overview'; state.generated = null; await chooseWorld(result.world.id); notify('Company created');
+    const result = await post('/api/worlds', input); state.boot = await api('/api/bootstrap'); state.view = (state.boot.seats || []).includes(input.kind) ? 'work' : 'overview'; state.generated = null; await chooseWorld(result.world.id); notify('Company created');
   }]]);
   const generator = content.folder('From a brief', { root: true });
   const prompt = draft('generate', { prompt: '' });
@@ -1389,7 +1394,7 @@ async function initialize() {
   const url = new URL(location.href), wanted = url.searchParams.get('world') || localStorage.getItem('finance-world-id');
   state.world = state.boot.worlds.some(w => w.id === wanted) ? wanted : state.boot.worlds[0]?.id || '';
   const previous = url.searchParams.get('view') || (url.searchParams.has('connected') ? sessionStorage.getItem('finance-world-return-view') : '') || localStorage.getItem('finance-world-tab');
-  state.view = views.includes(previous) ? previous : state.world ? 'overview' : 'create';
+  state.view = views.includes(previous) ? previous : state.world ? (world().seat ? 'work' : 'overview') : 'create';
   if (state.world) await loadSnapshot(state.world);
   const tabId = url.searchParams.get('tab'), savedPane = space().panes.find(p => p.tabs.some(t => t.id === tabId));
   if (savedPane) workspace.activateTab(spaceId(), savedPane.id, tabId);

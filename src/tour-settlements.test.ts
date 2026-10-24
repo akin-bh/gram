@@ -115,3 +115,23 @@ test('the simulated Tour Accountant answers from the answer key and refuses what
   expect(summarize(w).seat!.judge_cases).toBe(1);
   balanced(w);
 });
+
+test('a posted settlement is reversed, never deleted: revenue returns to deferred, the show and the deposit reopen, and the record comes back to the queue',()=>{
+  const w=onboarded();act(w,{type:'advance_to',at:'2026-03-13T22:00:00.000Z'});
+  const sydney=caseItem(w,'ANZ-77400118'),balance=(id:string)=>w.accounts.find((row:any)=>row.id===id)?.balance_minor??0;
+  const revenue0=balance('concert-revenue'),deferred0=balance('deferred-revenue-events'),receivable0=balance('settlement-receivable');
+  const resolution={allocations:[{show_id:'SH-3003',amount_minor:196_225_600}],lines:[{show_id:'SH-3003',kind:'venue_hire',amount_minor:5_200_000},{show_id:'SH-3003',kind:'merchant_fee',amount_minor:3_563_200},{show_id:'SH-3003',kind:'music_licence',amount_minor:4_611_200}],recognize:['SH-3003']};
+  act(w,{type:'work_propose',work_item_id:sydney.id,...resolution,confidence:0.95,reason:'Settled as stated; the show performed.'},agent);
+  expect(find(w.workItems,sydney.id,'Item').state).toBe('posted');
+  const show=()=>find(w.shows,'SH-3003','Show');expect(show().recognized_minor).toBe(209_600_000);expect(show().settled_minor).toBe(209_600_000);balanced(w);
+  denied(w,{type:'work_reverse',work_item_id:sydney.id,reason:'No'},agent,'work_permission_denied');
+  const reversed=act(w,{type:'work_reverse',work_item_id:sydney.id,reason:'Sydney sent a corrected statement; the merchant fee was overstated.'},accountant);
+  expect(find(w.workItems,sydney.id,'Item').state).toBe('reversed');expect(show().recognized_minor).toBe(0);expect(show().settled_minor).toBe(0);
+  const receipt=w.bankReceipts.find((row:any)=>row.bank_reference==='ANZ-77400118');expect(receipt.unapplied_minor).toBe(196_225_600);expect(receipt.status).toBe('unallocated');
+  expect(balance('concert-revenue')).toBe(revenue0);expect(balance('deferred-revenue-events')).toBe(deferred0);expect(balance('settlement-receivable')).toBe(receivable0);balanced(w);
+  expect(w.tourReversals).toHaveLength(1);expect(w.tourPostings[0].reversed_by).toBe(reversed.reversal.id);
+  const again=find(w.workItems,reversed.reposted_as,'Reposted item');expect(again.state).toBe('new');expect(again.reversed_from).toBe(sydney.id);expect(agentQueue(w).some((row:any)=>row.id===again.id)).toBe(true);
+  // Nothing was lost: the reposting settles the same show again.
+  act(w,{type:'work_propose',work_item_id:again.id,...resolution,confidence:0.95,reason:'The corrected statement agrees with the ticket audit.'},agent);
+  expect(find(w.workItems,again.id,'Item').state).toBe('posted');expect(show().recognized_minor).toBe(209_600_000);balanced(w);
+});

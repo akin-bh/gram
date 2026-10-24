@@ -5,8 +5,8 @@ const ADJUSTMENT_KINDS = ['bank_fee', 'early_pay_discount', 'keg_deposit', 'prom
 const percent = value => Math.round(Number(value || 0) * 100) + '%';
 const when = value => value ? new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }) + ' UTC' : '';
 const actorLabel = id => String(id || '').startsWith('agent-world:') ? 'the seat' : String(id).startsWith('slack:') ? 'Slack ' + String(id).slice(6) : String(id).startsWith('sim:') ? String(id).slice(4) + ' (simulated)' : id === 'controller-local' ? 'Controller' : id;
-const states = ['new', 'proposed', 'needs_info', 'answered', 'rejected', 'approved', 'posted', 'escalated', 'scheduled', 'closed'];
-const stateLabels = { new: 'New', proposed: 'Awaiting approval', needs_info: 'Question asked', answered: 'Answered', rejected: 'Rejected', approved: 'Approved', posted: 'Posted', escalated: 'Escalated', scheduled: 'Follow-up scheduled', closed: 'Closed' };
+const states = ['new', 'proposed', 'needs_info', 'answered', 'rejected', 'approved', 'posted', 'reversed', 'escalated', 'scheduled', 'closed'];
+const stateLabels = { new: 'New', proposed: 'Awaiting approval', needs_info: 'Question asked', answered: 'Answered', rejected: 'Rejected', approved: 'Approved', posted: 'Posted', reversed: 'Reversed', escalated: 'Escalated', scheduled: 'Follow-up scheduled', closed: 'Closed' };
 
 // A rule's bound next to the largest case that supports it: a bound wider than its evidence is how a rule quietly grows.
 function boundText(backtest, ctx) {
@@ -51,6 +51,14 @@ function decisionControls(parent, item, ctx, question) {
     ]);
   }
   if (item.state === 'approved' && item.posting_error) parent.buttons([['Retry posting', () => ctx.work({ type: 'work_retry_posting' })]]);
+  // Reverse and repost, never delete: a person says why, the gateway mirrors the journal, and the record returns to the seat linked to this item.
+  if (item.state === 'posted') {
+    const r = ctx.draft('work-reverse-' + item.id, { reason: '' });
+    parent.text('Reverse because', r.reason, value => r.reason = value, 'Required; the seat reads it');
+    parent.buttons([['Reverse posting', () => { if (r.reason.trim().length < 3) throw Object.assign(Error('Say why. The reversal is linked to the original and the seat learns from it.'), { field: 'Reverse because' }); return ctx.work({ type: 'work_reverse', work_item_id: item.id, reason: r.reason.trim() }); }]]);
+  }
+  if (item.reversal) parent.text('Reversed', 'By ' + actorLabel(item.reversal.by) + ': ' + item.reversal.reason + (item.reposted_as ? ' · reposting as ' + item.reposted_as : ''));
+  if (item.reversed_from) parent.text('Reposting', 'This record was posted as ' + item.reversed_from + ' and reversed; see its timeline for the reason.');
 }
 
 export function renderWork(content, ctx) {
@@ -71,6 +79,13 @@ export function renderWork(content, ctx) {
   ].filter(Boolean).join(' · '));
   if (status.missing_connections?.length) card.buttons([['Connect ' + status.missing_connections.join(', '), () => ctx.connect(status.missing_connections)]]);
   card.buttons([['Run a shift now', () => ctx.startShift(), Boolean(status.running_run) || !status.agent_available]]);
+  // What the seat can reach, and the switch that proves the limit: revoke a source and the seat can neither read it nor be launched.
+  const access = card.folder('Access', { open: true });
+  access.text('Reads', seat.access.reads.join(', ') + '. Writes ' + seat.access.writes.join('; ') + '. Cannot ' + seat.access.cannot.join(', ') + '.').host.classList.add('prose');
+  for (const system of status.systems || []) {
+    const connected = !(status.missing_connections || []).includes(system);
+    access.buttons([[system + ' · ' + (connected ? 'connected' : 'not connected') + (connected ? ' · Revoke' : ' · Connect'), () => connected ? ctx.revoke(system) : ctx.connect([system])]]);
+  }
   const settings = card.folder('Autonomy and people', { open: false });
   settings.text('Posts without a person when', 'An approved policy covers it and confidence ≥ ' + percent(seat.autonomy.min_confidence) + ', up to ' + ctx.money(seat.autonomy.max_auto_minor));
   settings.slider('Confidence bar (%)', Math.round(seat.autonomy.min_confidence * 100), 50, 100, 1, value => ctx.work({ type: 'seat_configure', min_confidence: value / 100 }));
@@ -142,7 +157,23 @@ export function renderWork(content, ctx) {
   const pending = (w.bankFeed || []).filter(row => !row.delivered_at);
   feed.text('Next sync', pending.length ? pending.length + ' lines scheduled · next ' + when(pending[0].arrives_at) : 'No scheduled lines');
   if (pending.length) feed.buttons([['Advance to the next sync', () => ctx.act(pending[0].arrives_at > w.now ? { type: 'advance_to', at: pending[0].arrives_at } : { type: 'advance_time', hours: 1 })]]);
-  if (w.kind !== 'cash-application') feed.text('Your own scenario', 'Record a line for this seat with its answer key through the API (record_case_expectation) or `bun run bench:cash --kind=' + w.kind + ' --judge-case=cases.json`; it is scored as the judge set.').host.classList.add('prose');
+  if (w.kind === 'tour-settlements') {
+    const dep = ctx.draft('venue-deposit', { payer: '', amount: '', memo: '', currency: 'AUD', original: '', rate: '' }), depositForm = feed.folder('Record a venue deposit', { open: false });
+    depositForm.text('Payer (as the bank shows it)', dep.payer, value => dep.payer = value, 'WEST COAST ARENA CO');
+    depositForm.text('Amount received (AUD)', dep.amount, value => dep.amount = value, '1536480.00');
+    depositForm.text('Memo', dep.memo, value => dep.memo = value, 'SETTLEMENT SH-3006 PERTH');
+    depositForm.select('Settled in', dep.currency, [{ value: 'AUD', label: 'AUD' }, { value: 'NZD', label: 'NZD, converted by the bank' }], value => { dep.currency = value; ctx.rerender(); });
+    if (dep.currency === 'NZD') { depositForm.text('NZD amount', dep.original, value => dep.original = value, '1575000.00'); depositForm.text('Bank rate (AUD per NZD)', dep.rate, value => dep.rate = value, '0.9225'); }
+    depositForm.buttons([['Record deposit', async () => {
+      const cents = text => { const value = Math.round(Number(text) * 100); if (!/^\d+(\.\d{1,2})?$/.test(String(text).trim()) || value <= 0) throw Object.assign(Error('Enter a positive amount with up to two decimals.'), { field: 'Amount received (AUD)' }); return value; };
+      const amount = cents(dep.amount), reference = 'ANZ-' + String(Date.now()).slice(-8);
+      const fx = dep.currency === 'NZD' ? { original_currency: 'NZD', original_amount_minor: cents(dep.original), fx_rate: Number(dep.rate) } : {};
+      if (dep.currency === 'NZD' && !(fx.fx_rate > 0)) throw Object.assign(Error('Enter the bank rate.'), { field: 'Bank rate (AUD per NZD)' });
+      await ctx.act({ type: 'record_venue_deposit', bank_reference: reference, amount_minor: amount, payer_name: dep.payer.trim(), memo: dep.memo.trim(), ...fx, external_event_id: 'console:' + reference });
+      Object.assign(dep, { payer: '', amount: '', memo: '', original: '', rate: '' });
+    }]]);
+    depositForm.text('Scoring it', 'An answer key for this seat is recorded through the API (record_case_expectation) or `bun run bench:cash --kind=tour-settlements --judge-case=cases.json`; the seat never sees it.').host.classList.add('prose');
+  }
   const line = ctx.draft('bank-line', { payer: '', amount: '', memo: '', channel: 'ach' }), form = w.kind === 'cash-application' ? feed.folder('Record a bank line', { open: false }) : null;
   if (form) {
   form.text('Payer name', line.payer, value => line.payer = value, 'As the bank shows it, or blank');

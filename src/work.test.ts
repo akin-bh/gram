@@ -301,3 +301,22 @@ test('a judge records a bank line with its answer key; the seat works it unseen 
   expect(score.summary.by_set.planted.cases).toBe(4);
   balanced(w);
 });
+
+test('a posted application is reversed, never deleted: the journal is mirrored, the records come back, and the record returns to the queue linked to the original',()=>{
+  const w=onboarded();
+  act(w,{type:'advance_time',hours:24});
+  const anchor=item(w,'JPM-88310431');
+  act(w,{type:'work_propose',work_item_id:anchor.id,allocations:[{invoice_id:'INV-2001',amount_minor:128400}],confidence:0.95,reason:'Cited invoice and amount agree.'},agent);
+  expect(item(w,'JPM-88310431').state).toBe('posted');balanced(w);
+  const invoice=()=>find(w.invoices,'INV-2001','Invoice');expect(invoice().status).toBe('paid');
+  denied(w,{type:'work_reverse',work_item_id:anchor.id,reason:'Wrong invoice'},agent,'work_permission_denied');
+  const reversed=act(w,{type:'work_reverse',work_item_id:anchor.id,reason:'The Anchor Tavern paid INV-2002; the memo was stale.'},dana);
+  expect(item(w,'JPM-88310431').state).toBe('reversed');expect(invoice().status).toBe('open');expect(invoice().amount_paid_minor).toBe(0);
+  const receipt=w.bankReceipts.find((row:any)=>row.bank_reference==='JPM-88310431');expect(receipt.unapplied_minor).toBe(128400);expect(receipt.status).toBe('unapplied');
+  balanced(w);
+  expect(reversed.reversal.journal_id).toBeTruthy();expect(w.journals.some((row:any)=>row.id===reversed.reversal.journal_id)).toBe(true);
+  const again=find(w.workItems,reversed.reposted_as,'Reposted item');expect(again.state).toBe('new');expect(again.reversed_from).toBe(anchor.id);expect(again.refs).toContain(reversed.reversal.id);
+  expect(agentQueue(w).some((row:any)=>row.id===again.id)).toBe(true);
+  expect(whyTimeline(w,'INV-2001').timeline.map((row:any)=>row.action)).toEqual(expect.arrayContaining(['propose','approve','post','reverse']));
+  denied(w,{type:'work_reverse',work_item_id:anchor.id,reason:'Twice'},dana,'invalid_transition');
+});

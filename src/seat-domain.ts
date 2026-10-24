@@ -59,6 +59,8 @@ export interface SeatDomain{
   fingerprint(resolution:any):unknown;
   resolutionRefs(resolution:any):string[];
   post(w:World,item:any,resolution:any,meta:{approved_by:string;approval:'human'|'policy';policies:any[]},h:WorkHooks):Posting;
+  /** Reverse a posting a person decided was wrong: a reversing entry, the records put back, the reversal linked to the original. */
+  reverse?(w:World,item:any,posting:any,reason:string,actor:Actor,h:WorkHooks):{id:string;journal_id?:string|null;refs:string[];evidence:string[]};
   reminder(w:World,item:any,h:WorkHooks):{message_id:string;follow_up?:FollowUp};
   followUpOpen(w:World,item:any):{open:boolean;reason:string};
   // Precedents and evidence.

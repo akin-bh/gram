@@ -91,7 +91,7 @@ export function validatedTourControls(input:unknown,fail:(code:string,message:st
 }
 export function normalizeTourWorld(w:World){
   if(w.kind!==TOUR_KIND)return;
-  for(const key of ['tours','shows','venues','approvers','vendors','settlements','tourInvoices','bankReceipts','bankFeed','tourInvoiceFeed','tourPostings','tourCaseKey'])w[key]??=[];
+  for(const key of ['tours','shows','venues','approvers','vendors','settlements','tourInvoices','bankReceipts','bankFeed','tourInvoiceFeed','tourPostings','tourReversals','tourCaseKey'])w[key]??=[];
   w.tourHistory??={shows:[],settlements:[],settlement_lines:[],deposits:[],allocations:[],invoices:[]};
   w.tourParameters??={music_licence_bps:DEFAULT_LICENCE_BPS,music_licence_source:'docs/live-nation-sources.md §7 (unverified search summary of OneMusic papers); controller-set'};
 }
@@ -249,7 +249,7 @@ export function seedTourSettlements(w:World,count:number,random:()=>number,h:Wor
     duties:['Allocate each venue deposit to the show settlement it pays and code the statement\'s lines to the GL','Recognize concert revenue only for shows that performed; money for postponed shows stays deferred','Check that each tour invoice\'s approver was within their limit, that it is not a duplicate and that its document is in the tour folder','Chase venues for gross below the ticket audit and deductions outside the contract','Prepare the music licence line for sign-off; load journals to the ledger through the gateway'],
     // Invented people in real roles (JR-93271 names the roles, not the people); every surface marks them simulated when they act.
     people:[{id:'tour.accountant',name:'Priya Nair',title:'Tour Accountant',role:'accountant',simulated:true},{id:'controller-local',name:'Marcus Hale',title:'Touring Finance Director',role:'controller',simulated:true}],
-    access:{reads:['bank','netsuite (standing in for Oracle)','gmail'],writes:['journals through the gateway after approval','invoice compliance decisions after approval'],cannot:['approve its own work','approve policies or invoices','move money','change contracts, limits or simulation time']},
+    access:{reads:['bank','netsuite (standing in for Oracle)'],writes:['journals through the gateway after approval','invoice compliance decisions after approval'],cannot:['approve its own work','approve policies or invoices','move money','change contracts, limits or simulation time']},
     sources:{real:['Tour Settlements Officer posting JR-93271','Settlement Manager posting JR-93290','Live Nation 2025 Form 10-K revenue recognition note and balance sheet','Live Nation 2025 free-cash reconciliation','Ticketmaster Standard Purchase Policy (US) §§14–16'],simulated:['venues, deal terms and settlement sheets','deposits and their references','approval-limit amounts and approvers','chart of accounts and GL codes','the past season','the music licence rate (controller parameter)'],digest:'docs/live-nation-sources.md'},
     autonomy:{enabled:false,auto_post:true,min_confidence:0.9,max_auto_minor:500_000_000},
     ablation:{trust_agent_confidence:false,skip_backtest:false},
@@ -593,6 +593,39 @@ function postTour(w:World,item:any,resolution:TourResolution,meta:{approved_by:s
   return posting;
 }
 
+/** The gateway's reversing write: the settlement journal mirrored, recognized revenue deferred again, the
+ * receivable and the deposit put back, or an invoice decision undone; linked to the posting it reverses. */
+function reverseTour(w:World,item:any,posting:any,reason:string,actor:Actor,h:WorkHooks){
+  const reversal:any={id:h.id('rev'),posting_id:posting.id,work_item_id:item.id,kind:posting.kind,reason,by:actor.id,at:w.now,posted_by:'gateway'};
+  if(posting.kind==='invoice_compliance'){
+    const invoice=h.find(w.tourInvoices,posting.invoice_id,'Invoice');
+    if(posting.decision==='approve'){
+      const account=({production:'production-expense',freight:'production-expense',catering:'catering-expense',marketing:'marketing-expense'} as Record<string,string>)[invoice.category]??'production-expense';
+      const operation=h.effect('invoice_approval_reversal',reversal.id,invoice.amount_minor,[{account_id:'tour-payables',debit_minor:invoice.amount_minor},{account_id:account,credit_minor:invoice.amount_minor}],`invoice-approval-reversal:${item.id}`,0);
+      reversal.operation_id=operation.id;reversal.journal_id=operation.journal_id??null;
+    }
+    Object.assign(invoice,{status:'awaiting_compliance_check',decision:null,decided_by:null,decided_at:null,compliance_posting_id:null,reversed_posting_id:posting.id});
+  }else{
+    const receipt=h.find(w.bankReceipts,posting.receipt_id,'Deposit'),totals:Record<string,number>={},addTo=(account:string,amount:number)=>{totals[account]=(totals[account]??0)+amount;};
+    let settled=0;
+    for(const allocation of posting.allocations){
+      const show=h.find(w.shows,allocation.show_id,'Show'),venue=h.find(w.venues,show.venue_id,'Venue'),lines=posting.lines.filter((line:any)=>line.show_id===show.id),closing=allocation.amount_minor+sum(lines.map((line:any)=>line.amount_minor));
+      addTo('settlements-clearing',allocation.amount_minor);for(const line of lines)addTo(line.account_id??lineKinds[line.kind as LineKind].account,line.amount_minor);
+      settled+=closing;show.settled_minor=Math.max(0,show.settled_minor-closing);show.status_settlement=show.settled_minor<=0?'unsettled':show.settled_minor>=show.gross_box_office_aud_minor?'settled':'partly_settled';
+      const recoup=sum(lines.filter((line:any)=>line.kind==='advance_recoupment').map((line:any)=>line.amount_minor));if(recoup)venue.contract.recoupable_advance_minor+=recoup;
+    }
+    // The mirror of the settlement journal: what was debited is credited, and the receivable comes back.
+    const lines=[...Object.entries(totals).map(([account_id,amount])=>amount>=0?{account_id,credit_minor:amount}:{account_id,debit_minor:-amount}),{account_id:'settlement-receivable',debit_minor:settled}];
+    const operation=h.effect('venue_settlement_reversal',reversal.id,settled,lines,`settlement-reversal:${item.id}`,0);reversal.operation_id=operation.id;reversal.journal_id=operation.journal_id??null;
+    for(const showId of posting.recognize??[]){const show=h.find(w.shows,showId,'Show');if(show.recognized_minor>0){h.post([{account_id:'concert-revenue',debit_minor:show.recognized_minor},{account_id:'deferred-revenue-events',credit_minor:show.recognized_minor}],'revenue_recognition_reversal',show.id,`Reverse ${show.id} revenue recognition: ${reason}`);show.recognized_minor=0;}}
+    const allocated=sum(posting.allocations.map((row:any)=>row.amount_minor));
+    receipt.allocated_minor-=allocated;receipt.unapplied_minor+=allocated;receipt.status=receipt.allocated_minor>0?'partly_allocated':'unallocated';
+  }
+  posting.reversed_by=reversal.id;w.tourReversals.push(reversal);
+  h.emit('settlement.reversed',{reversal_id:reversal.id,posting_id:posting.id,work_item_id:item.id,reason});
+  return {id:reversal.id,journal_id:reversal.journal_id??null,refs:[reversal.id,...(posting.allocations??[]).map((row:any)=>row.show_id),...(posting.invoice_id?[posting.invoice_id]:[]),...(reversal.journal_id?[reversal.journal_id]:[])],evidence:[reversal.id]};
+}
+
 // ---- History as SQL -----------------------------------------------------------------------------
 export const TOUR_HISTORY_SCHEMA={
   venues:'id, name, city, country, currency, venue_hire_minor, merchant_fee_cap_bps, permitted_deductions (comma list), recoupable_advance_minor',
@@ -636,7 +669,7 @@ const lineSchema=z.object({show_id:ruleRef,kind:z.enum(Object.keys(lineKinds) as
 
 export const tourDomain:SeatDomain=registerDomain({
   kind:TOUR_KIND,label:'Tour settlements',accounts:tourAccounts,
-  seatSystems:['bank','netsuite','gmail'],readSystems:{item:['bank','netsuite'],history:['netsuite'],post:['netsuite']},
+  seatSystems:['bank','netsuite'],readSystems:{item:['bank','netsuite'],history:['netsuite'],post:['netsuite']},
   hidden:['tourHistory','tourCaseKey'],proposableKinds:['settlement_deposit','invoice_compliance'],proposalKind:'tour_settlement',
   defaults:{name:'Live Nation Australasia',count:10,maxCount:200,openingMinor:150_000_000,currency:'AUD'},
   ruleSchema:tourRuleSchema,describeRule:rule=>describeTourRule(rule),
@@ -660,6 +693,7 @@ export const tourDomain:SeatDomain=registerDomain({
     }
     return posting;
   },
+  reverse:(w,item,posting,reason,actor,h)=>reverseTour(w,item,posting,reason,actor,h),
   reminder(w,item,h){
     const show=h.find(w.shows,item.subject_id,'Show'),venue=h.find(w.venues,show.venue_id,'Venue');
     const message=h.mail({direction:'outbound',to:[`settlements@${String(venue.id).toLowerCase()}.simulated.test`],subject:`Reminder: ${show.id} balance ${aud(showOpen(show))}`,body:item.proposal.reminder,source_refs:[show.id,item.id]});
