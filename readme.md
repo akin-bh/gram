@@ -150,7 +150,7 @@ Setup:
 1. Create the app from [`docs/slack-app-manifest.yaml`](docs/slack-app-manifest.yaml) and install it to your workspace.
 2. Under **Basic Information → App-Level Tokens**, generate a token with `connections:write`. The bot joins the bound channel itself (`channels:join`); `/invite @gram` also works.
 3. Put `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID` and the role lists `SLACK_ACCOUNTANTS` and `SLACK_CONTROLLERS` (Slack user IDs) in `.env`. A controller can also answer and approve, so one person can be mapped as the controller alone.
-4. Turn on **Work → Autonomy and people → Ask and approve in Slack**.
+4. Turn on **Work → Autonomy and people → Ask and approve in Slack**. Each company can have its own channel: `POST /api/worlds/:id/work/slack {enabled:true, channel:"C…"}` binds it there instead of the default.
 
 The console works the same without Slack; use it as the fallback for a live demo.
 
