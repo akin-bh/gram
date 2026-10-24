@@ -94,6 +94,7 @@ export const scenarioCatalog = [
   { id: 'period-close', kind: 'period-close', name: 'Month-end close', description: 'Payables, receivables and a locked accounting period. Provider settlements await posting until reopening.' },
   { id: 'treasury', kind: 'treasury', name: 'Treasury liquidity', description: 'Large obligations and constrained cash, incoming collections and reserved outgoing payments.' },
   { id: 'settlement-exceptions', kind: 'settlement-exceptions', name: 'Settlement exceptions', description: 'A settled service invoice receives a controller credit and processor dispute; a settled vendor payment returns. Receipts, evidence, liabilities and bank movements remain connected.' },
+  { id: 'nessie', kind: 'nessie', name: 'Festival & events finance (Nessie)', description: 'The Festival Finance Operations Officer seat powered by Capital One\'s Nessie API: ticket revenue reconciled against expected gate receipts, vendor payments validated against contracts and known vendors, artist fee withdrawals checked against schedules, sponsor deposits matched to agreements, and vendor invoices verified against approver budgets. Built for any music festival or live event.' },
 ];
 const chart = [
   ['cash-bank','Operating bank','asset'],['cash-processor','Processor clearing','asset'],['receivables','Accounts receivable','asset'],

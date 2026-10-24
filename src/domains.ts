@@ -3,5 +3,6 @@
 import './cash-application.ts';
 import './tour-settlements.ts';
 import './calhacks.ts';
+import './nessie.ts';
 export {allDomains,domainByKind,domainFor,seatKinds} from './seat-domain.ts';
 export type {SeatDomain} from './seat-domain.ts';
