@@ -47,6 +47,8 @@ bun run start           # open http://127.0.0.1:24300
 
 **New company** → pick a seat → connect its systems → switch **On duty** → approve the rules it proposes. The three-minute demo script is [`docs/judging.md`](docs/judging.md).
 
+OAuth connections expire after an hour, so right before a demo run `bun scripts/connect-demo.ts` — it walks the real consent flow for every system of every company and reports what's connected.
+
 ## The four companies
 
 | Company | The job gram does |
