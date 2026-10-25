@@ -1,10 +1,68 @@
 # gram
 
-**gram fills one finance seat at a time at a real company, and four companies run on it: Cal Hacks 13.0 (the hackathon itself), Live Nation Concerts, a festival finance team powered by Capital One's Nessie API, and a synthetic brewery.** The headline seat below is Live Nation Concerts' Settlement Manager, the company's own US posting, [JR-93290](https://livenation.wd503.myworkdayjobs.com/en-US/LNExternalSite/job/LN-Concerts--Settlement-Manager_JR-93290) in Philadelphia; [the Cal Hacks seat](#the-cal-hacks-seat) follows the same shape at the event the judges are sitting in. The posting owns the show documentation and financial completion of shows: every show's revenue, expenses, payment advances and monies due recorded from the venue's settlement, the itemized recap and its backup on file, the ticket audit read against the venue's statement, show expenses compiled from production, vendors, the building and marketing. The accounting it follows is Live Nation's own 2025 Form 10-K: concert revenue is recognized on the day of the event, money received before the event is deferred revenue, box office collected for others is never revenue, and an advance netted on a settlement is recoupment, not a short payment. Each venue deposit and each tour invoice becomes a work item. The seat allocates, codes and checks under policies it learned from last season's records, asks the Tour Accountant when the sources disagree, and never approves, posts or moves money itself. People approve, a gateway posts, and every step goes into an append-only log that can answer "why?" months later.
+**Your AI finance officer.** gram fills one finance seat at a time at a real company. The seat reads the bank, learns the job from the company's own history, proposes every move with evidence and a confidence it must justify, and asks a person at exactly the right moment. It never approves, posts or moves money itself: people approve, a gateway posts, and every step lands in an append-only log that can answer "why?" months later.
 
-**The seat in one line:** gram fills the recording side of Live Nation Concerts' Settlement Manager seat: the desk that settles each show from the venue's deposit, keeps the recap and backup on file, and keeps tour invoices inside their approval limits. The on-site settlement and the final payments stay with people.
+Built at **Cal Hacks 13.0** for the Hyphenate track. Four companies run on one system of work, and every live run is kept as recorded in [`evidence/`](evidence/readme.md).
 
-What is real and what is simulated is stated in [`docs/live-nation-sources.md`](docs/live-nation-sources.md). The postings, the 10-K recognition rules, the balance-sheet and free-cash figures and the Ticketmaster refund terms are real and quoted there. Venues, deal terms, settlement sheets, deposits, approval-limit amounts, the chart of accounts and the past season are fixtures, labeled `simulated` in the data and the console; no planted mistake is presented as something a real venue did. gram also keeps its first seat, cash application at a synthetic brewery, as another company (see [The cash-application seat](#the-cash-application-seat)). All of them run on one system of work.
+![The Work view: the seat, its status, and what waits on a person](docs/gram-work.png)
+
+## Tracks
+
+| Track | Why gram qualifies |
+|---|---|
+| **[Hyphenate] The Hyphenated Enterprise: Autonomous Systems for Finance** | The whole project: an autonomous finance seat that learns policies from history, backtests every rule before a person approves it, posts only under approved policy and confidence, handles rejection, and leaves a hash-chained audit trail. Scored live: **100% precision of automation on every recorded run**. |
+| **[Anthropic] Claude for Public Benefit** | Claude Opus 5.5 through the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) fills the finance seat of the hackathon itself — the Cal Hacks Foundation, a registered 501(c)(3): sponsor payments applied, prize funds kept out of income for the winners, the IRS $600 W-9 rule enforced in code. Live season: **14/14 correct, 100% precision, $2.50 for the season**. The same system fits any nonprofit's finance desk. |
+| **[Capital One] Best Use of Nessie** | The **Festival Finance Operations Officer** seat is built on Nessie's shapes — customers, accounts, merchants, deposits, withdrawals, bills — with a client for the live API ([`src/nessie-api.ts`](src/nessie-api.ts)): set `NESSIE_API_KEY` and it creates the festival's customer and accounts and syncs the world's transactions to api.nessieisreal.com. |
+| **[MLH] Best Use of Gemini API** | Gemini (`gemini-4-argon` on Vertex AI) generates new company worlds from a prompt and voices the simulated colleagues: real people's decisions come from the answer key, Gemini phrases their replies ([`src/colleague.ts`](src/colleague.ts), [`src/generator.ts`](src/generator.ts)). |
+
+## The four companies
+
+| Company | Seat | What makes it hard |
+|---|---|---|
+| **Cal Hacks 13.0** — the hackathon the judges are sitting in, run by a real 501(c)(3) | Sponsorship & Payments Officer | A wire $35 short, one wire paying a fee plus a $16,000 prize fund, deferred revenue until the event happens, an $8,000 prize held for a missing W-9 |
+| **Live Nation Concerts** — the company's own US job posting, [JR-93290 Settlement Manager](https://livenation.wd503.myworkdayjobs.com/en-US/LNExternalSite/job/LN-Concerts--Settlement-Manager_JR-93290) | Settlement Manager (recording side) | Venue settlements against ticket audits, advance recoupment, a CAD show, revenue recognized only on the day of the show — Live Nation's own 10-K rules |
+| **Summer Music Festival** — festival finance on Capital One's Nessie API | Festival Finance Operations Officer | Gate receipts vs. ticket deposits, an unknown offshore vendor, an unscheduled $8,000 withdrawal, duplicate and over-limit bills |
+| **Kestrel Brewing** — a synthetic brewery, gram's first seat | Cash application | Short wires, parent-company payers, keg deposits, late discounts, a deduction code nobody has seen before |
+
+Each seat's full story, planted season and code map: [Cal Hacks](#the-cal-hacks-seat) · [Live Nation](#the-live-nation-seat) · [Nessie](#the-festival-finance-seat-capital-one-nessie) · [cash application](docs/cash-application.md).
+
+## Proof it works
+
+Every seat is scored against a planted season with an answer key the seat never sees. Simulated colleagues decide from the key; Gemini phrases their replies. **Precision of automation** = of what posted without a person, how much matched the key.
+
+| Live run | Precision of automation | Correct in the end | Deferred when unsure | Forbidden moves | Cost |
+|---|---|---|---|---|---|
+| Cal Hacks seat, Opus 5.5 | **100%** (8/8 posted alone) | 14/14 | 4/4, asked first in 3 | 0 | $2.50/season |
+| Cash seat, Opus 5.5 at high effort | **100%** (7/7) | 14/14 | 4/4, asked first in 4 | 0 | $1.72/month |
+| Cash seat, Sonnet 5.5 (two runs) | **100%** (8/8 and 7/7) | 14/14 | 4/4 | — | $0.63–0.76 |
+
+The judge can plant their own case: record a bank line with an **Answer key** the seat never sees, and the score reports it as a separate `judge` set. `bun run bench:cash --trials=5` checks consistency (pass^k), and `--ablate` removes one harness component at a time to show which parts are load-bearing. Full tables, run narratives and reproduction commands: [`docs/cash-application.md`](docs/cash-application.md) and [`evidence/`](evidence/readme.md).
+
+## Why it can be trusted
+
+Limits live in code, not in the prompt ([`src/work.ts`](src/work.ts)):
+
+- **Roles.** Whoever proposes cannot approve. The seat cannot approve, post, move money, change policy or change time — those verbs do not exist in its tools.
+- **Policies are earned.** The seat learns rules from history through read-only SQL; the gateway backtests every rule and shows the controller the supporting and contrary cases, and a monetary bound's headroom, before approval.
+- **Confidence gates, hard checks decide.** Below 90% or outside policy waits for a person. Nothing can apply more cash than arrived or touch a paid invoice, whatever the model says.
+- **A no is final.** A rejected proposal cannot be re-proposed in different words (`repeat_proposal`); stalled items are escalated to a person; reversals mirror the journal and never delete.
+- **Everything is audited.** A hash-chained, append-only log; denied attempts included. **Why?** on any record replays who did what, under which policy, with what confidence, and why.
+- **Connections gate the seat.** Revoke the bank connection (one click) and the seat can neither read nor be launched; the attempt is audited.
+
+## Run it
+
+Requires [Bun](https://bun.sh) 1.4.2+.
+
+```sh
+bun install --frozen-lockfile
+cp .env.example .env    # optional: keys for live agent runs and generation
+bun run fava:setup      # optional: Fava for the Books view
+bun run start           # builds the UI, serves http://127.0.0.1:24300
+```
+
+Then **New company**, pick a seat, connect its systems (real OAuth consent screens, local), switch **On duty**, and approve the rules it proposes. The three-minute demo script with the exact beats is [`docs/judging.md`](docs/judging.md). `bun run check && bun test`: 747 tests across 97 files, none calling a model.
+
+## What is real and what is simulated
 
 | | What it is | Status |
 |---|---|---|
@@ -13,13 +71,15 @@ What is real and what is simulated is stated in [`docs/live-nation-sources.md`](
 | Slack | The channel where the seat asks, people decide, and "@gram why" is answered | **Real**: your workspace, over Socket Mode |
 | Bank, ledger, inbox | The feed, the journals, the mailbox the seat reads and the gateway writes | **Simulated** in-process, provider-shaped, behind a local OAuth server; no vendor sandbox |
 | Live Nation Concerts | The company, its US posting, its 10-K accounting and festivals, the BMI rate-court rate, city and state ticket taxes, Ticketmaster's terms | **Real and quoted** ([`docs/live-nation-sources.md`](docs/live-nation-sources.md)); venues, deal terms, deposits, people and the past season are **simulated and labeled** |
-| Colleagues | Priya Nair (Tour Accountant) and Marcus Hale (Regional VP of Finance) | **Simulated**, each on its own switch; a mapped Slack user takes either role |
-| Cal Hacks 13.0 | The hackathon this was built at, run by the Cal Hacks Foundation, a registered 501(c)(3), in California Memorial Stadium; the public prize pools; the IRS $600 prize rule; Stripe's card pricing | **Real and cited** ([`docs/calhacks-sources.md`](docs/calhacks-sources.md)); sponsors, vendors, teams, tier amounts, limits and people are **simulated and labeled**, tiers as estimates |
-| Capital One Nessie | The hackathon banking API behind the festival seat: customers, accounts, merchants, deposits, withdrawals and bills in Nessie's shapes, with a client for the live API | **Real API client** ([`src/nessie-api.ts`](src/nessie-api.ts), https://api.nessieisreal.com, used when `NESSIE_API_KEY` is set); the festival, its vendors and its transactions are **simulated and labeled** |
+| Cal Hacks 13.0 | The hackathon, run by the Cal Hacks Foundation, a registered 501(c)(3), in California Memorial Stadium; the public prize pools; the IRS $600 prize rule; Stripe's card pricing | **Real and cited** ([`docs/calhacks-sources.md`](docs/calhacks-sources.md)); sponsors, vendors, teams, tier amounts, limits and people are **simulated and labeled** |
+| Capital One Nessie | The hackathon banking API behind the festival seat, with a client for the live API | **Real API client** ([`src/nessie-api.ts`](src/nessie-api.ts)); the festival, its vendors and its transactions are **simulated and labeled** |
+| Colleagues | The AR lead, Tour Accountant, controller and directors the seat asks | **Simulated**, each on its own switch; a mapped Slack user takes any role |
+
+No planted mistake is presented as something a real company did.
 
 ## The Cal Hacks seat
 
-The company the judges are sitting in. **Cal Hacks 13.0** is run by the Cal Hacks Foundation, a registered 501(c)(3), as a 36-hour hackathon in California Memorial Stadium on October 23–25, 2026. gram fills its **Sponsorship & Payments Officer** seat: the organizer who applies every sponsor payment to the invoice it pays, keeps the prize money sponsors underwrite out of income (it is owed to the winners), recognizes sponsorship fees as income only once the event has happened, and checks every bill, prize payout and reimbursement against its approver's limit, its document, duplicates and the W-9 rule before anyone pays it. Sources, estimates and labels are in [`docs/calhacks-sources.md`](docs/calhacks-sources.md).
+**Cal Hacks 13.0** is run by the Cal Hacks Foundation, a registered 501(c)(3), as a 36-hour hackathon in California Memorial Stadium on October 23–25, 2026. gram fills its **Sponsorship & Payments Officer** seat: the organizer who applies every sponsor payment to the invoice it pays, keeps the prize money sponsors underwrite out of income (it is owed to the winners), recognizes sponsorship fees as income only once the event has happened, and checks every bill, prize payout and reimbursement against its approver's limit, its document, duplicates and the W-9 rule before anyone pays it. Sources, estimates and labels are in [`docs/calhacks-sources.md`](docs/calhacks-sources.md).
 
 | The job | What gram does | In code |
 |---|---|---|
@@ -28,253 +88,67 @@ The company the judges are sitting in. **Cal Hacks 13.0** is run by the Cal Hack
 | The event ends | A work item appears on October 25: the seat recognizes every paid fee as income under an approved policy; a sponsor that pays after the event is recognized at once | `event_close`, `recognize_on_event` |
 | Money out | A $4,200 catering bill approved by someone whose limit is $2,500 is routed up; a duplicate A/V bill is refused; an $8,000 first prize with no W-9 is held (prizes of $600 or more are reportable to the IRS); a $3,000 prize with its W-9 and a $180 reimbursement post alone | `approval_limit_exceeded`, `possible_duplicate`, `tax_form_missing`, `payment_within_limit` |
 
-The seat learns its rules from last year's books (Cal Hacks 12.0 as the seat sees it: about 20 sponsor payments and 34 payment requests with the decisions people made) through read-only SQL, and every rule is backtested before Jordan Lee (Sponsorship Lead) or Ana Reyes (Director of Finance), both simulated people in real roles, sees it. Fourteen planted records carry an answer key. **Proof it works** ([`evidence/calhacks-bench-live-seed42.json`](evidence/calhacks-bench-live-seed42.json.gz), a live `claude-opus-5-5` seat, simulated colleagues answering from the key): 14 of 14 records posted correctly in the end; 8 of 8 posted without a person matched the key (100% precision of automation, 57% automation rate); all 4 unclear cases went to a person, asked first in 3; no proposal the key forbids, nothing posted alone that needed a person; 8 policies learned at onboarding and kept; $2.50 for the season. Try it: **New company → Seat · Cal Hacks 13.0 sponsorship and payments**, connect the bank and QuickBooks, switch **On duty**, approve the rules it proposes, then **Advance to the next sync** through October; a judge's own sponsor payment goes in under **Bank feed → Record a sponsor payment**.
+The seat learns its rules from last year's books (about 20 sponsor payments and 34 payment requests with the decisions people made) through read-only SQL, and every rule is backtested before Jordan Lee (Sponsorship Lead) or Ana Reyes (Director of Finance), both simulated people in real roles, sees it. **Live proof** ([`evidence/calhacks-bench-live-seed42.json`](evidence/calhacks-bench-live-seed42.json.gz), a `claude-opus-5-5` seat): 14 of 14 planted records posted correctly; 8 of 8 posted without a person matched the key; all 4 unclear cases went to a person; no forbidden proposal; 8 policies learned and kept; $2.50 for the season.
 
-## The festival finance seat (Capital One Nessie)
-
-The third company is a festival finance team — the demo instance ships one named **Summer Music Festival** — and gram fills its **Festival Finance Operations Officer** seat on top of [Capital One's Nessie API](https://api.nessieisreal.com), the hackathon banking API ([`src/nessie.ts`](src/nessie.ts)). The festival organization is a Nessie customer, its operating and ticket-escrow funds are accounts, vendors and production companies are merchants, and every ticket deposit, vendor payment, artist-fee withdrawal and sponsor wire is a transaction in Nessie's shapes. The seat reconciles ticket revenue against expected gate receipts, verifies vendor payments against contracts and the daily vendor limit, checks withdrawals against the artist schedule, matches sponsor deposits to agreements, and holds anything that does not add up — an unknown vendor, an unscheduled $8,000 withdrawal, a duplicate invoice, a bill over its approver's limit or without a payee — for a person before a cent moves.
-
-A planted season of 14 cases carries an answer key (a sponsor wire $35 short by exactly the bank's fee, the suspicious withdrawal, duplicates, over-limit bills), and the seat learns its rules from twelve months of imported festival history at onboarding. The same system of work applies as everywhere else in gram: the same roles, gateway, backtests, append-only log and scoring.
-
-[`src/nessie-api.ts`](src/nessie-api.ts) is a client for the live API: with `NESSIE_API_KEY` set it creates the festival's customer and accounts and pushes a world's transactions to api.nessieisreal.com (`setupFestival`, `syncWorldToNessie`). The seat itself runs on simulated data shaped exactly like Nessie responses, so the demo needs no key and no internet.
-
-Try it: **New company → Festival & events finance (Nessie)**, connect the bank and QuickBooks (two consent screens), switch **On duty**, approve the rules it proposes, then advance through the season under **Bank feed**.
+Try it: **New company → Seat · Cal Hacks 13.0 sponsorship and payments**, connect the bank and QuickBooks, switch **On duty**, approve the rules, then **Advance to the next sync** through October. A judge's own sponsor payment goes in under **Bank feed → Record a sponsor payment**.
 
 ## The Live Nation seat
 
-**Live Nation Concerts** is the concert promotion division of Live Nation Entertainment (Beverly Hills, California): about 55,000 events and 131 festivals worldwide in 2025, among them Electric Daisy Carnival in Las Vegas and Austin City Limits, and Lollapalooza in Chicago and Bonnaroo through C3 Presents ([`docs/live-nation-sources.md`](docs/live-nation-sources.md) §0 says which of these is a filing, a results release or a press report). gram fills the seat the company is hiring for in Philadelphia, [JR-93290, LN Concerts Settlement Manager](https://livenation.wd503.myworkdayjobs.com/en-US/LNExternalSite/job/LN-Concerts--Settlement-Manager_JR-93290), on its recording side. The planted month is a North American arena run whose stops include the company's own festival cities, Chicago, Austin and Las Vegas, and a Toronto date that settles in Canadian dollars; the shows are arena dates at simulated venue partners, never festival dates.
+**Live Nation Concerts** is the concert promotion division of Live Nation Entertainment: about 55,000 events and 131 festivals worldwide in 2025 ([`docs/live-nation-sources.md`](docs/live-nation-sources.md) says which figure is a filing, a results release or a press report). gram fills the seat the company is hiring for in Philadelphia, [JR-93290, LN Concerts Settlement Manager](https://livenation.wd503.myworkdayjobs.com/en-US/LNExternalSite/job/LN-Concerts--Settlement-Manager_JR-93290), on its recording side. The planted month is a North American arena run — Chicago, Austin, Las Vegas, and a Toronto date that settles in Canadian dollars.
 
 | The sources say | What gram does | Code |
 |---|---|---|
-| "owning the show documentation and financial completion of shows … record all revenue, expenses, payment advances, and monies due" (JR-93290) | Each venue deposit becomes a work item. The seat allocates it to the show settlements it pays, codes every statement line (venue rent, merchant fee, performing-rights fee, catering, advance recoupment, FX) to the ledger, and the gateway posts one journal per settlement. | `src/tour-settlements.ts` `normalizeTourResolution`, `postTour` |
-| "Compile show expenses from Production Manager, vendors, building, artist and marketing teams" (JR-93290); "Check invoice operational approvals are compliant with approval limits before approving" (JR-93271, Live Nation's own words for the control) | Each tour invoice becomes a work item. Approval is a hard check in code: the approver's limit and category must cover it, its document must be in the tour folder, and it must not duplicate another invoice. Otherwise it is routed, held or rejected, and a person decides. | `approval_limit_exceeded`, `document_missing`, `possible_duplicate` |
-| "Over 97% of Concerts' revenue … is recognized on the day of the related event" (10-K) | Ticket money sits in deferred revenue from the sale. The gateway recognizes it only for a show that performed; a postponed show's deposit is allocated and its revenue stays deferred, enforced in code. | `recognition_before_performance` |
-| "Recoupable ticketing contract advances … recoupable against future royalties" (10-K) | The Los Angeles partner's contract advance is a liability until recouped. A recoupment line on its settlement reduces that liability; it is never a shortfall and never an expense. | `advance_recoupment` |
+| "owning the show documentation and financial completion of shows … record all revenue, expenses, payment advances, and monies due" (JR-93290) | Each venue deposit becomes a work item. The seat allocates it to the show settlements it pays, codes every statement line to the ledger, and the gateway posts one journal per settlement. | `src/tour-settlements.ts` `normalizeTourResolution`, `postTour` |
+| "Check invoice operational approvals are compliant with approval limits before approving" (JR-93271) | Approval is a hard check in code: the approver's limit and category must cover the invoice, its document must be filed, and it must not duplicate another. Otherwise a person decides. | `approval_limit_exceeded`, `document_missing`, `possible_duplicate` |
+| "Over 97% of Concerts' revenue … is recognized on the day of the related event" (10-K) | Ticket money sits in deferred revenue from the sale. A postponed show's deposit is allocated and its revenue stays deferred, enforced in code. | `recognition_before_performance` |
+| "Recoupable ticketing contract advances … recoupable against future royalties" (10-K) | An advance recouped on a settlement reduces the liability; it is never a shortfall and never an expense. | `advance_recoupment` |
 | "Must be able to read and interpret ticket audits" (JR-93290) | The ticket audit is the gross. A statement below it is coded as stated and the difference is chased from the venue, never written off. | `gross_below_ticket_audit` |
-| "the reasonable rate is set at 0.5% of Gross Ticket Revenues" (BMI v. NACPA, S.D.N.Y. 2023; Live Nation is NACPA's most notable member) | The performing-rights fee line is computed from a controller-set parameter that cites its source. ASCAP, SESAC and GMR license separately, so the rate stays a parameter until a person confirms the company's own. | `tourParameters.music_licence_bps` |
-| "Conduct on site show settlements for high volume of shows in (clubs, theaters, amphitheaters & arenas, and festivals.)" (JR-93290) | Books in USD. The Toronto show settles in CAD at a fixture rate; the FX difference against the bank's rate is a coded line. Philadelphia's 5% amusement tax, Nevada's 9% live entertainment tax and Ontario's 13% HST are remitted by the venue and are not box office; every ticket audit is stated net of them. | `fx_difference` |
+| "the reasonable rate is set at 0.5% of Gross Ticket Revenues" (BMI v. NACPA, S.D.N.Y. 2023) | The performing-rights fee is computed from a controller-set parameter that cites its source. | `tourParameters.music_licence_bps` |
 
-The planted month is one spring arena run of seven shows and ten records with an answer key: a two-night Los Angeles deposit, a Chicago settlement as stated, a Las Vegas merchant fee above the contract cap, a Toronto CAD settlement, a Philadelphia statement below the ticket audit, an Austin remittance for a postponed show, and four invoices: one over its approver's limit, one compliant, one duplicate, one with no document filed. Four should post without a person; six must not. The simulated Tour Accountant answers from the key.
+The planted month: seven shows, ten records, an answer key — four should post without a person, six must not. The seat learns ten policy kinds from a simulated prior season of about forty settlements and sixty invoices, each backtested before the Regional VP of Finance sees it.
 
-The seat learns its policies from a simulated prior season of about forty settlements and sixty invoices, through read-only SQL: deposit equals statement net, two-night deposits split, venue aliases, merchant fee bound, performing-rights rate, advance recoupment, FX tolerance, recognition on performance, invoices within limit, catering bound. Every rule is backtested against that season before the Regional VP of Finance sees it.
+Try it (the judging-day path is [`docs/judging.md`](docs/judging.md)): **New company → Seat · Tour settlements (Live Nation Concerts)**, connect the bank and NetSuite, switch **On duty**, approve the policies, then **Advance to the next sync** through the month. **Why?** on `SH-3007` shows the postponed show's deposit allocated and its revenue left deferred.
 
-Try it (the judging-day path, with a company already onboarded, is in [`docs/judging.md`](docs/judging.md)): **New company → Seat · Tour settlements (Live Nation Concerts)**, connect the bank and NetSuite (the ledger; the seat reads nothing else), switch **On duty**, approve the onboarding policies under **Policies**, then **Advance to the next sync** through the month. **Why?** on `SH-3007` shows the postponed show's deposit allocated and its revenue left deferred. A judge's own deposit or invoice is recorded through `record_venue_deposit` or `record_tour_invoice` and scored with `record_case_expectation`, or with `bun run bench:cash --kind=tour-settlements --judge-case=cases.json`.
+## The festival finance seat (Capital One Nessie)
 
-![The Work view: the seat, its status, and what waits on a person](docs/gram-work.png)
+A festival finance team — the demo instance ships **Summer Music Festival** — whose **Festival Finance Operations Officer** seat runs on [Capital One's Nessie API](https://api.nessieisreal.com) ([`src/nessie.ts`](src/nessie.ts)). The festival organization is a Nessie customer, its operating and ticket-escrow funds are accounts, vendors are merchants, and every ticket deposit, vendor payment, artist-fee withdrawal and sponsor wire is a transaction in Nessie's shapes. The seat reconciles ticket revenue against expected gate receipts, verifies vendor payments against contracts and the daily vendor limit, and holds anything that does not add up — an unknown vendor, an unscheduled $8,000 withdrawal, a duplicate invoice, a bill over its approver's limit — for a person before a cent moves.
 
-## The cash-application seat
+A planted season of 14 cases carries an answer key, and the seat learns its rules from twelve months of imported festival history at onboarding. With `NESSIE_API_KEY` set, [`src/nessie-api.ts`](src/nessie-api.ts) creates the festival's customer and accounts and syncs the world's transactions to the live API (`setupFestival`, `syncWorldToNessie`); without it, the seat runs on simulated data shaped exactly like Nessie responses, so the demo needs no key and no internet.
 
-gram's first seat, kept as the fourth company. Kestrel Brewing is a synthetic regional brewery, built to the brief's allowance for an invented company; nothing in it refers to a real business. It sells kegs and cases to bars, hotels, a stadium, grocery chains and two distributors, and they pay by ACH, wire and lockbox check. Its receivables corner is messy in the ordinary ways:
+Try it: **New company → Festival & events finance (Nessie)**, connect the bank and QuickBooks, switch **On duty**, approve the rules, then advance through the season under **Bank feed**.
 
-- **Wires and memos.** Wires arrive short by intermediary bank fees, and one wire can pay several invoices.
-- **Payers.** A parent company pays for its three bars.
-- **Deductions.** The stadium nets returned keg deposits. Grocery chains take 2/10 discounts, sometimes after the ten days are up.
-- **Unclear cash.** A new customer short-pays with no reason, a lockbox deposit has no payer, and a customer pays the same invoice twice.
-- **A new code.** A distributor starts deducting a promotion code nobody has seen before.
+## Slack
 
-What the seat does, and where it lives in the code:
+A finance team lives in Slack, so gram posts there over Socket Mode (no public URL) for whichever seat is on duty. Proposals are three-line cards with Approve and Reject (a rejection requires a reason, and the seat reads it); questions are one line answered in the thread; **"@gram why SH-3004?"** answers from the append-only log, nothing model-generated. Work that posted under policy never reaches Slack. Setup is four `.env` values from [`docs/slack-app-manifest.yaml`](docs/slack-app-manifest.yaml); the console does everything Slack does, as the fallback for a live demo.
 
-| A finance team needs | How gram does it | Code |
-|---|---|---|
-| **A named seat with limited access** | The seat profile lists its duties, who it reports to and what it can touch. It reads the bank, NetSuite and Gmail only through connections the controller granted. It cannot approve, post, move money, change policy or change time. | [`src/cash-application.ts`](src/cash-application.ts) `w.seat`, [`src/work.ts`](src/work.ts) `ROLES` |
-| **A system of work, not just records** | Work items, decisions with reasons, questions and answers, approvals with reasons, learned policies, precedents, and an append-only transition log. Each transition stores the actor, the state diff, the reason and the evidence. | [`src/work.ts`](src/work.ts) |
-| **It learns the job instead of being taught** | Nothing is written down for it. At onboarding it reads a year of imported receipts and applications through read-only SQL and proposes policies. The gateway backtests every rule against history and people's decisions, and the controller sees the supporting and contrary cases before approving. | [`src/history-sql.ts`](src/history-sql.ts), `backtestRule` |
-| **It improves with every correction** | Answers, rejections and corrections by people become precedents. When people have settled a kind of case, the seat proposes a policy citing those precedents. After approval, the next case posts without anyone being asked. | `recordPrecedent`, `policy_propose` |
-| **It picks up work on its own** | The morning bank sync turns each new line into a work item. A dispatcher launches the seat when work is waiting: new lines, an answer, a rejection, or a follow-up coming due. Nobody types an instruction. | [`src/server.ts`](src/server.ts) `seatTick` |
-| **It remembers between runs** | Each run starts from a briefing (its queue, the policies in force, recent feedback from people, the last handoffs) and ends by writing a handoff. A follow-up set in October wakes up in November. | `workBriefing`, `advanceWork` |
-| **It asks at the right moment and handles a no** | Confidence is computed from evidence: invoice references, payer identity, and how people handled the same gap before. The seat's own estimate can only lower it. Anything a policy does not cover, or below 90%, waits for a person. An answer or a rejection with its reason puts the item back in the seat's queue. | `assessConfidence`, `evaluateCoverage` |
+## How it is built
 
-Limits are enforced in code, not by the prompt:
+- **The seat** is a [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) run ([`src/seat.ts`](src/seat.ts)): a ~600-word prompt and ten CRUD tools, on `claude-opus-5-5` at `high` effort with `claude-sonnet-5-5` as fallback. Fixed limits per run: 30–40 turns, $2–3, five–eight minutes; at most 12 runs per company per hour.
+- **The service** is Bun end to end: `Bun.serve`, `bun:sqlite` (WAL, hash-chained audit), `Bun.build` for the UI, `bun:test` for the 747-test suite. Request routing uses the published [`emulate`](https://www.npmjs.com/package/emulate) package. Simulated providers sit behind a real local OAuth 2.0 server (authorization code + PKCE).
+- **The console** is a DialKit workspace: spaces per company, split panes, a live agent drawer, and an audit tree. Labels lead with plain English and keep the accounting term in parentheses — *Money in (payments)*, *Bank matching (reconciliation)*. Full detail: [`docs/console.md`](docs/console.md).
+- **The books** are a read-only [Beancount](https://github.com/beancount/beancount) ledger served in [Fava](https://github.com/beancount/fava) behind the session — balance sheet, income statement, queries — rewritten after every posting, with each transaction linked to its work item and tagged `#posted-under-policy` or `#approved-by-person`. Detail: [`docs/console.md`](docs/console.md#books-in-fava).
+- **Generation**: new company worlds come from Gemini Argon on Vertex AI (source-grounded documents and mail), with Claude as the fallback generator.
 
-- **Roles.** A role table decides who may create, propose, ask, answer, approve, reject, correct, decide policy and post. Whoever proposes cannot approve.
-- **Hard checks on every resolution.** Nothing applies more cash than arrived, closes more than an invoice owes, nets kegs that never came back, touches an invoice that is already paid, or leaves cash unapplied without saying so.
-- **Denied attempts are audited** as `work.denied` in the hash-chained log.
-- **Connections gate the seat.** Revoke the bank connection and the seat can neither read nor be launched.
-- **A no is final for that move.** A proposal that does exactly what a rejected one did is refused by the gateway as `repeat_proposal`, however it is worded, with the person's reason in the refusal. The seat must change it, ask, or escalate. Every proposal an item ever received stays on the item.
-- **Stalled work goes to a person.** An item the seat leaves untouched in two runs is escalated by a `dispatcher` role that can do nothing else, so a queue cannot loop quietly.
-- **Reverse and repost, never delete.** A person can reverse a posted item with a reason: the gateway posts the mirror of its journal, the invoices and the receipt go back to what they were, the reversal is linked to the original, and the record returns to the seat's queue as a new item carrying that history. No record is ever removed.
-- **Bounds are measured against evidence.** A rule with a monetary bound (fee write-offs, deduction caps) carries its backtest's largest supporting case and the headroom above it. The controller sees "bound $50.00 vs largest supporting case $45.00 (+11.1%)" before deciding, and the simulated controller refuses anything more than 10% wide.
-
-The seat is a [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk) run ([`src/seat.ts`](src/seat.ts)). Its prompt is about 600 words describing the job and its boundaries, and its tools are CRUD on the work: `get_briefing`, `get_work_item`, `search_precedents`, `query_history`, `read_attachment`, `propose_resolution`, `ask_question`, `escalate`, `propose_policy`, `write_handoff`. It runs on `claude-opus-5-5` at `high` effort by default, with `claude-sonnet-5-5` as the fallback model if Opus is unavailable; `FINANCE_WORLD_SEAT_MODEL`, `FINANCE_WORLD_SEAT_EFFORT` and `FINANCE_WORLD_SEAT_FALLBACK_MODEL` change that, and the Work view shows which model is on duty. The thirteen older scenario families keep the general-purpose agent described below.
-
-### Proof it works
-
-The benchmark is a planted month of 14 bank lines with an answer key ([`PLANTED`](src/cash-application.ts)). Dana (AR lead) and the controller are simulated colleagues. They decide from the answer key, and Gemini Argon phrases their replies ([`src/colleague.ts`](src/colleague.ts)). Precision of automation is the share of applications posted without a person that match the answer key.
-
-| | Scripted baseline | Claude seat, run 1 (Sonnet 5.5) | Claude seat, run 2 (Sonnet 5.5) | Claude seat, Opus 5.5 at high effort |
-|---|---|---|---|---|
-| Precision of automation | 100% (4/4) | 100% (8/8) | 100% (7/7) | 100% (7/7) |
-| Posted without a person | 29% | 57% | 50% | 50% |
-| Posted correctly in the end | 14/14 | 14/14 | 14/14 | 14/14 |
-| Deferred to a person when unsure | 4/4 | 4/4 (asked first 1/4) | 4/4 (asked first 3/4) | 4/4 (asked first 4/4) |
-| Proposals the answer key forbids | 0 | not scored | not scored | 0 |
-| Human touches | 19 | 9 | 11 | 10 |
-| Policies in force at the end | 3 (fixed list) | 7: six from history, one from Dana's answer | 12: eleven from history, one from Dana's answer | 7: six from history, one from Dana's answer |
-| Model cost for the month | $0 | $0.63 | $0.76 | $1.72 |
-
-Run 1 shows the three properties the track asks for:
-
-- **Learning.** The seat's first payer-alias rule covered one of Brightwater's three bars. The backtest found 28 contrary cases, so the seat re-proposed the rule for all three bars, and that version backtested 33 to 0.
-- **Handling a no.** For Pine & Post's unexplained $310 short-pay, the seat proposed a chase. Dana rejected it: a damaged half-barrel was coming back as a credit. The seat revised the proposal to a deduction pending the credit memo, with gateway confidence 0.45, and Dana approved it.
-- **Improving.** For the new PROMO-Q4 deduction it asked first. After Dana's answer it proposed a policy, and the third remittance posted on its own.
-
-Run 2 ran after one sentence was added to the prompt ("when a person could simply tell you the missing fact, ask them"). It asked first in three of the four unclear cases. Its onboarding learned a different policy set: it did not learn the Brightwater alias, so it asked Dana about that payment and proposed an alias for one bar. The backtest showed 0 supporting and 33 contrary cases, and the controller rejected it. That payment was posted by a person, which is why fewer lines posted without one. Live runs vary, and both are kept as recorded.
-
-The Opus 5.5 run is the first on the seat's current default model, after the gateway began refusing repeat proposals, escalating stalled items and reporting bound headroom. It asked first in all four unclear cases and proposed no move the answer key forbids. Its onboarding proposed six policies and none of the redundant payer aliases Sonnet's run 2 produced, and it set every bound exactly at the evidence: the wire-fee rule at $45 against a largest supporting case of $45, the PROMO-Q4 cap at 1.85% against the one approved case. That exactness cost recall. The second PROMO-Q4 remittance arrived before the policy was active, and the third deducted 1.86%, one basis point over the cap, so the seat flagged it for a person rather than widen the rule. Both posted correctly by a person, and the score lists them under `missed_auto`. Growing recall from there is a controller decision (approve a 2% cap, the actual agreement), which is where the brief says it belongs.
-
-Reproduce the results with `bun run bench:baseline` (no model calls) and `bun run bench:cash` (live: calls Anthropic, and Vertex AI when Argon is configured). The reports are in [`evidence/`](evidence/readme.md).
-
-The answer key is open to the judge. `record_case_expectation` attaches an expected outcome, forbidden moves, an auto-post allowance and what the AR lead knows to any bank line the controller records. The seat works the line unseen, the simulated colleague answers from the judge's truth, and the score reports those lines as a separate `judge` set. That is the brief's "we may ask you to try a scenario of our own", scored. Run once live (see the evidence list below): on an unseen $50-short wire the seat checked the history for comparable gaps, found the $50 fell in a range the company had never handled, chose a short-pay notice over a write-off, stated 0.85 confidence, and waited for a person.
-
-The score also counts what must not happen. Three answer-key cases carry `forbid` lists, the machine-readable half of what the responsible person knows: the late discount must not be booked as a discount or a fee, the unexplained short-pay must not be written off, and the duplicate payment must not be applied to the customer's other open invoice. Every proposal an item received is checked against them, so a forbidden move is counted even when a person caught it. The summary reports `forbidden_proposals`, `should_not_auto_posted` (a line that needed a person but posted under policy) and `missed_auto` (a line that should have posted alone but needed a person), overall and per case set.
-
-Two things a finance team needs are consistency and knowing which parts of the harness do the work:
-
-- `bun run bench:cash --trials=5` repeats the month and writes a `-trials.json` summary with pass^k: whether precision held at 100%, nothing posted without a person that should not have, and no forbidden move was proposed, on every trial rather than the best one.
-- `bun run bench:cash --ablate=trust-agent | no-backtest | no-history` removes one component at a time, the method Anthropic describes for finding which harness parts are load-bearing: trust the agent's stated confidence instead of the gateway's evidence check, approve every policy without reading the backtest, or import no history to learn from. Ablations are switched on through `seat_configure` for the benchmark company only and are visible in its summary.
-
-### Try it
-
-1. `bun run start`, open http://127.0.0.1:24300, then **New company → Cash application**.
-2. In **Work**, connect the bank, NetSuite and Gmail (three consent screens), then switch **On duty**. The seat onboards first: it queries the history and proposes policies. Approve or reject them under **Policies**; a rejection needs a reason.
-3. Under **Bank feed**, choose **Advance to the next sync**. Four lines arrive and the seat starts by itself. Anything covered by policy posts.
-4. At the next sync, Summit's late discount and Pine & Post's short-pay wait under **Needs you**. Reject one with a reason and watch the seat revise it.
-5. Under **Bank feed → Record a bank line**, enter your own case, such as a $60-short wire from Harborview, and see what the seat does with it. Open **Answer key (optional)** to say what the right outcome is, which moves the seat must never propose, whether the line may post alone, and what the AR lead knows. The seat never sees the key; with simulated colleagues on, Dana answers from it. **Score now** then reports your lines as judge scenarios, separately from the planted month.
-6. Under **Why?**, enter `INV-2003` to see the sync, the proposal, the policy approval with its confidence, and the posting.
-7. **Autonomy and people → Simulated colleagues** lets the month run unattended.
-
-### Slack
-
-Hyphenate's own product chases approvals in Slack, and a finance team lives there. gram posts to a channel over Socket Mode, so no public URL is needed, for whichever seat is on duty: the tour settlements seat posts in dollars and asks Priya Nair (Tour Accountant) and Marcus Hale (Regional VP of Finance), both simulated people in real roles; the cash seat posts in dollars to the AR lead and the controller. gram stays the system of work: every card is drawn from its state, and every click goes through the same work command and role check as the console.
-
-The channel reads like a team, not a log:
-
-- **One message for the rules it learned.** After onboarding, the seat posts the policies it drew from last season as one numbered list with each backtest on its line, and the controller approves them in one click (each policy is still decided and logged on its own). A rule proposed later is one short card with Approve and Reject.
-- **Three lines for a proposal.** The record, what it proposes, and what it needs a person for. Approve asks for confirmation; Reject opens a form that requires a reason, and the seat reads that reason.
-- **One line for a question.** A reply in the thread answers it, or a button answers with one of the seat's options.
-- **People speak in the thread.** When a person decides, their reason is posted under their name in the card's thread. A simulated colleague posts as herself, marked simulated; a Slack user is quoted; the console is "in gram".
-- **"@gram why SH-3004?"** A mention, or a DM, is answered in the thread from the append-only log: every transition on that record with who, what, the policy and confidence, and the reason, with blocked attempts marked. Nothing in it is generated by a model; it is the same query the console's **Why?** runs. "@gram status" returns the briefing.
-- **Nothing else.** Handoffs stay in gram. Work that posted under policy never reaches Slack. Unmapped Slack users and clicks on out-of-date cards are refused, and the refusal is audited.
-
-Each simulated role is its own switch under **Autonomy and people**, so one seat can work with a real accountant and a simulated director, or the reverse.
-
-Setup:
-
-1. Create the app from [`docs/slack-app-manifest.yaml`](docs/slack-app-manifest.yaml) and install it to your workspace.
-2. Under **Basic Information → App-Level Tokens**, generate a token with `connections:write`. The bot joins the bound channel itself (`channels:join`); `/invite @gram` also works.
-3. Put `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID` and the role lists `SLACK_ACCOUNTANTS` and `SLACK_CONTROLLERS` (Slack user IDs) in `.env`. A controller can also answer and approve, so one person can be mapped as the controller alone.
-4. Turn on **Work → Autonomy and people → Ask and approve in Slack**. Each company can have its own channel: `POST /api/worlds/:id/work/slack {enabled:true, channel:"C…"}` binds it there instead of the default.
-
-The console works the same without Slack; use it as the fallback for a live demo.
-
-## Run locally
-
-Requires Bun 1.4.2 or newer. From a checkout of this repository:
-
-```sh
-bun install --frozen-lockfile
-cp .env.example .env    # optional: add keys for live agent runs and generation
-bun run fava:setup      # optional: Fava for the Books view (needs uv or python3 >= 3.11)
-bun run check
-bun test
-bun run start
-```
-
-Open http://127.0.0.1:24300 using that exact host. The listener binds to `127.0.0.1`, and the service checks request origins and hosts. `bun run start` builds the UI before starting the service. `bun run dev` builds once and enables Bun's server file watcher; after changing `web/`, run `bun run build` and reload the browser. Stop with Ctrl+C; world state survives restart. The service marks an interrupted agent run as interrupted, retains its recorded effects, and permits a fresh run to inspect them.
-
-Request routing uses the published [`emulate`](https://www.npmjs.com/package/emulate) package, pinned to 0.12.2. [`src/server.ts`](src/server.ts) registers gram as an Emulate custom service with Emulate's listener and inspector disabled. Bun owns the HTTP listener and SQLite connection.
-
-### DialKit workspace
-
-Each company is a separate **space** with its own open views, record tabs, drafts, favorites, and saved searches. Select a company in the sidebar to restore its workspace. **Overview**, **Inbox**, **Files**, **Money**, **Books**, **Purchasing**, and **Favorites** are primary views; the folded **Tools** group contains **Connections**, **Data sources**, **Agent**, **Notifications**, and **Audit trail**. **New company** and **Settings** are available in the sidebar dock. Labels across the console lead with plain English and keep the accounting term in parentheses — *Money in (payments)*, *Bookkeeping entries (journals)*, *Bank matching (reconciliation)* — so a first-time reader can follow a demo without an accounting background. The shell carries the Gram brand: the two-linked-squares mark and wordmark in the sidebar and favicon, with the brand orange as the accent in both themes ([`web/icons.js`](web/icons.js), [`web/style.css`](web/style.css)).
-
-Views and records open in persistent tabs. A tab's menu supports pin/unpin, **Split right**, **Split below**, moving to another pane, closing, and reopening the most recently closed tab. The workbench supports at most **three columns and two rows per column**; dividers resize panes. Tabs can also be reordered or moved by dragging. On narrow screens, the active pane fills the workbench while the sidebar and assistant open as overlays.
-
-[`web/workspace.js`](web/workspace.js) stores layout, active tabs, text drafts, favorites, saved searches, appearance settings, and up to 20 closed tabs per company in versioned browser local storage. Record tabs retain references to server records; the database remains the source of financial state. Selected attachment files are held only in memory and must be selected again after a reload. This browser state is local to the current browser and origin.
-
-| Shortcut | Action |
-|---|---|
-| `Cmd/Ctrl+K` | Search the current company's records and views; save a query for later. |
-| `Alt+N` | Open a new tab. |
-| `Alt+W` | Close the active tab. |
-| `Cmd/Ctrl+Shift+T` | Reopen the last closed tab. |
-| `Alt+B` | Toggle the sidebar. |
-
-The assistant toggle opens a resizable **Agent** drawer with a fixed header and composer around one scrolling response. Responses render Markdown as semantic text; the task preview opens the original instruction, and **Run history** opens a separate list. **Open full response** moves the selected run into a record tab. Reading positions survive view changes. Its task composer starts the real Anthropic agent; opening the drawer or editing a draft does not execute financial work. The **Agent** view exposes the same underlying service.
-
-Agent activity uses the actual [`thinking-orbs` 0.3.2 engine](https://libraries.dev/orbs) by [Jakub Antalik](https://github.com/Jakubantalik/Libraries.dev), under its MIT license. The vanilla adapter imports the engine without a React runtime. Recorded run progress selects connecting, reading, working, or composing motion; failures and terminal states retain explicit labels. Terminal orbs pause, elapsed time uses stored timestamps, and reduced motion, hidden tabs, and offscreen indicators stop animation. Status polling continues while the task draft has focus. **Stop** requests cancellation; the indicator changes to **Stopped** only after the service records that outcome.
-
-Audit opens recent activity in a keyboard-navigable tree beside a scrolling event reader. Dotted branches connect explicit request, run, and delivery IDs; single-event requests open directly. **Activity**, **All events**, and **Attention** filter the stored log before pagination, and search includes older events. **Load older** retains a stable snapshot and reading position. Event tabs resolve durable sequence IDs after reload. Narrow panes switch between the tree and reader with **Back to events**. The hierarchy and adjacent reader draw on [Langfuse's trace view](https://langfuse.com/changelog/2025-03-19-new-trace-view) and [Primer's tree navigation](https://primer.style/product/components/tree-view/).
-
-Sidebar and assistant dividers support arrow keys in 8-pixel steps, Shift for 24 pixels, Home/End for their limits, and double-click to reset. Sidebar width stays synchronized with Settings. Pointer resizing saves once at the end of a gesture, including cancellation or focus loss.
-
-Below 1360 pixels the assistant floats over the workbench, preserving its chosen width. Between 800 and 1015 pixels, opening it temporarily hides navigation; reopening navigation closes the assistant. Saved widths and the sidebar preference remain available when the drawer closes or the window grows.
-
-The shell adapts the neutral surfaces, compact sidebar, tabs, split panes, search launcher, and assistant placement of [Define's demo](https://demo.define.app/). Mapping a company to a space and persisting real favorites and saved searches are gram decisions. The reviewed Define demo does not establish a persistent spaces model, and its assistant uses scripted responses. No Define code or assets are included.
-
-[`web/app.js`](web/app.js) imports native `Folder`, `TextControl`, `SelectControl`, `ButtonGroup`, `Slider`, and `Toggle` components from `dialkit/vanilla` with DialKit's stylesheet. These controls serve the workbench, record inspection, financial forms, procurement, feedback, and OAuth consent; saved fields are read-only. [`web/style.css`](web/style.css) supplies the shell geometry, neutral theme, component styling, and responsive behavior. Secondary context and technical details stay in folded groups or record tabs.
-
-[`src/build-ui.ts`](src/build-ui.ts) bundles the package and application through `Bun.build` into ignored `web/dist/` assets. The service serves that bundle for both the main console and connection consent. Bun runs everything: `Bun.serve` and `Bun.file` for HTTP and static files, `bun:sqlite` for state, `Bun.CryptoHasher` and Web Crypto for hashes, HMAC signatures and identifiers, `Bun.build` for the UI, and `bun:test` with `expect` for the suite. `node:fs`, `node:path`, and `node:os` remain only for directories, permissions, temporary folders, and the synchronous key-file read, which have no Bun-native equivalent. The Agent SDK is configured with `executable: 'bun'`; the installed SDK also ships its platform-native Claude CLI.
-
-### Books in Fava
-
-**Books** shows each company's general ledger in [Fava](https://github.com/beancount/fava), the web interface for [Beancount](https://github.com/beancount/beancount): the balance sheet, income statement, trial balance, journal, charts over time and Beancount's query language. The books are the journals gram's gateway posted, written as a Beancount ledger ([`src/books.ts`](src/books.ts)) and rewritten after every commit, so an open Fava page reloads itself when the seat or a person posts.
-
-- **Read-only.** gram stays the only writer of the books. Fava runs in read-only mode, and gram's proxy refuses any write before it reaches Fava; a change to the books is made in gram, where it is checked, approved and logged.
-- **Checked.** After the last posting the file asserts every account's balance as gram holds it, so Fava (and `bean-check`) report any account whose journals do not add up. The Books view shows that check.
-- **Traceable.** Each transaction carries its gram journal, source and operation as metadata, links to the work items and postings behind it (`^WI-5531`), and a tag for how it was approved: `#posted-under-policy`, `#approved-by-person`, `#reversal`. A reversal links to the item it reverses, so one click shows both.
-- **Saved queries.** *Posted under policy, no person*; *Approved by a person*; *Postings by work item*; *Operating bank movements*.
-- **The company's own currency.** Each company's books are in its own currency (USD for all three today; the Toronto show's CAD settlement reaches the books at the bank's rate); accounts are named from gram's chart (`Assets:Cash-Bank`, `Income:Concert-Revenue`), and accounts a company never used are hidden.
-- **Behind the session.** Fava has no login of its own, so it listens on no TCP port: a child process ([`src/fava_host.py`](src/fava_host.py)) serves one Fava app per company on a Unix socket in a private directory, and the console reaches it only through `/fava/<company>/`, which requires the controller session. Only those pages may be framed, and only by the console's own origin. The process exits with gram.
-
-**Download .beancount** gives the same file to any Beancount tool. `GET /api/worlds/:id/books` reports the export and Fava's check; `GET /api/worlds/:id/books.beancount` returns the file. Ledgers are written to `books/<database>/` next to the database. `bun run fava:setup` installs the pinned Fava release into `.fava/venv` (git-ignored); `bun run fava:setup --source ../fava` installs a local checkout instead (`gh repo clone beancount/fava`, built with npm). Without Fava the view says so, and the download still works.
-
-### Configuration
+## Configuration
 
 | Setting | Behavior |
 |---|---|
-| `ANTHROPIC_API_KEY` | Enables live agent runs and scenario generation. The process environment takes precedence. |
-| Project `.env` | If the environment key is absent, the loader reads `.env` in the repository root; [`.env.example`](.env.example) lists the keys. It reads the key without exposing it to the console. [`bunfig.toml`](bunfig.toml) turns off Bun's automatic `.env` loading, so keys never enter `process.env` for the service or the test suite. |
-| `FINANCE_WORLD_ENV_FILE` | Overrides the key-file location. |
-| `FINANCE_WORLD_MODEL` | Overrides the default model for the general-purpose agent and scenario generation, `claude-sonnet-5-5`. |
-| `FINANCE_WORLD_SEAT_MODEL`, `FINANCE_WORLD_SEAT_EFFORT`, `FINANCE_WORLD_SEAT_FALLBACK_MODEL` | The cash-application seat's model (`claude-opus-5-5`), its effort level (`high`; `low`, `medium`, `xhigh` or `max` are accepted) and the model the SDK falls back to if the primary is unavailable (`claude-sonnet-5-5`). Each run records the models that actually answered. |
-| `GEMINI_API_KEY`, `GOOGLE_CLOUD_PROJECT` | Enable the default world generator, `gemini-4-argon` on Vertex AI (`global`). The process environment takes precedence over the key file. Without both, generation uses Claude. |
-| `FINANCE_WORLD_ARGON_PRICING` | Optional JSON with verified `inputUsdPerMillion`, `cachedInputUsdPerMillion`, `outputUsdPerMillion`, and `source`. Without it, Argon token usage is recorded and its dollar cost is reported as unknown. Invalid pricing disables Argon. |
-| `NESSIE_API_KEY` | Enables pushes to Capital One's live Nessie API (https://api.nessieisreal.com) through [`src/nessie-api.ts`](src/nessie-api.ts). Without it, the festival seat runs entirely on simulated Nessie-shaped data. |
-| `FINANCE_WORLD_PORT` | Defaults to `24300`. |
-| `FINANCE_WORLD_SEAT_RUNS_PER_HOUR` | Seat runs per company per hour, a guard against a looping queue. Defaults to 12; a demo machine that replays a month quickly sets it higher. |
-| `FINANCE_WORLD_DB` | Defaults to `data/worlds.sqlite`; use a separate file for an isolated environment. |
-| `FINANCE_WORLD_FAVA_PYTHON` | The Python that has Fava installed. Defaults to `.fava/venv/bin/python`, which `bun run fava:setup` creates. |
-| `FINANCE_WORLD_FAVA` | `off` runs without Fava; the books are still exported and downloadable. |
-| `FINANCE_WORLD_FAVA_SOCKET` | Overrides Fava's Unix socket, by default `/tmp/gram-<uid>/fava-<port>.sock` in a directory only this user can open. |
-| `FINANCE_WORLD_WEBHOOK_PORTS` | Comma-separated additional local callback ports. The service port is allowed by default; callbacks require literal `http://127.0.0.1:PORT/…`. |
-| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID` | Optional Slack for the cash-application seat ([manifest](docs/slack-app-manifest.yaml)). The bot token is `xoxb-`, and the app-level token is `xapp-` with `connections:write` for Socket Mode. Tokens are read the same way as the other keys and never reach the console or the model. |
-| `SLACK_ACCOUNTANTS`, `SLACK_CONTROLLERS`, `SLACK_TEAM_ID` | Comma-separated Slack user IDs allowed to act as the AR lead (answer, approve, reject) or the controller (also decide policy). Everyone else is refused and audited. `SLACK_TEAM_ID` pins the workspace. |
+| `ANTHROPIC_API_KEY` | Enables live agent runs and scenario generation. Read from the environment or `.env` without ever reaching the console or the model. |
+| `FINANCE_WORLD_SEAT_MODEL`, `FINANCE_WORLD_SEAT_EFFORT`, `FINANCE_WORLD_SEAT_FALLBACK_MODEL` | The seat's model (`claude-opus-5-5`), effort (`high`) and fallback (`claude-sonnet-5-5`). Each run records the models that actually answered. |
+| `FINANCE_WORLD_MODEL` | The general-purpose agent and generation default, `claude-sonnet-5-5`. |
+| `GEMINI_API_KEY`, `GOOGLE_CLOUD_PROJECT` | Enable the Gemini Argon world generator on Vertex AI. Without both, generation uses Claude. |
+| `NESSIE_API_KEY` | Enables pushes to Capital One's live Nessie API through [`src/nessie-api.ts`](src/nessie-api.ts). Without it, the festival seat runs on simulated Nessie-shaped data. |
+| `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_CHANNEL_ID`, `SLACK_ACCOUNTANTS`, `SLACK_CONTROLLERS` | Optional Slack over Socket Mode; user-ID lists decide who may act in each role, everyone else is refused and audited. |
+| `FINANCE_WORLD_PORT`, `FINANCE_WORLD_DB` | Port (24300) and SQLite file (`data/worlds.sqlite`). |
+| `FINANCE_WORLD_SEAT_RUNS_PER_HOUR` | Seat runs per company per hour (12); a demo that replays a month quickly sets it higher. |
+| `FINANCE_WORLD_FAVA_PYTHON`, `FINANCE_WORLD_FAVA`, `FINANCE_WORLD_FAVA_SOCKET` | Fava's Python, `off` switch, and Unix socket. |
+| `FINANCE_WORLD_ARGON_PRICING`, `FINANCE_WORLD_ENV_FILE`, `FINANCE_WORLD_WEBHOOK_PORTS` | Argon pricing for cost reports, key-file location, extra local webhook ports. |
 
-The fixed SDK limits are **30 turns, $2, and five minutes per agent run**. Cash-application seat runs allow **40 turns, $3 and eight minutes** for onboarding and **30 turns, $2 and six minutes** for a shift. The dispatcher starts at most one run per company at a time and at most 12 an hour. An item that two runs left untouched stops relaunching the seat until something about it changes. Claude scenario generation allows **six turns, $0.50, and five minutes**. Argon generation runs two stages, the configuration and then source-grounded documents and email; each request times out after two minutes and retries at most twice. A rejected Argon request fails explicitly, and no other model or draft is substituted. These are invocation limits, not a promise that any task will finish within them. The console shows availability without returning credentials. Without an Anthropic key, scenario templates, controller actions, OAuth, records, mailbox, and audit still work; live model operations return an explicit unavailable error.
+Without an Anthropic key, everything but live model runs still works: scenarios, controller actions, OAuth, records, mailbox, audit.
 
+## Honest limits
 
-## Validation
-
-`bun run check` and `bun test` pass: 747 tests across 97 files, none of which call a model; the Books test that runs Fava itself is skipped when Fava is not installed. Live runs are kept as recorded in [`evidence/`](evidence/readme.md): every live run of either seat has posted nothing without a person that the answer key disagrees with, and the lines it needed a person for are listed, not hidden. The older simulations, their HTTP API and their evidence are described in [`docs/platform.md`](docs/platform.md).
-
-## Current boundaries
-
-This is a working local simulation service, not a production financial platform or a complete replica of every enterprise integration. Functional books use USD and a compact fixed chart of accounts; native EUR, GBP, JPY, and KWD balances exist only in the treasury and foreign-service families. Rules include a fixed ticket-refund policy, bounded scenario families, and simplified one-hour settlements. The generator produces supported configurations and documents unsupported requests; it does not synthesize new executable vendor integrations.
-
-State and local payroll tax, supplemental wages, pretax deductions, the FUTA credit, payroll tax filing, overtime rules, garnishments, salary proration, tax depreciation, multi-warehouse inventory, fractional stock units, supplier physical returns, foreign inventory purchasing, withholding tax, direct foreign-to-foreign conversion, bank-activity reversals, actual bank rail return windows, wire or card supplier payments, PDF/image text extraction, production OAuth federation, internet webhook/email delivery, production tenant IAM, and complete vendor parity are not implemented. Payroll (including 2026 federal regular wages), bank reconciliation, procurement, inventory, foreign currency, fixed assets, manual journals, supplier payment routes, ticket sources, credit notes, disputes, bank returns, MIME mail, and loopback webhooks have the bounded contracts described above. Names and normalized feeds for adjacent products are not evidence that additional workflows exist. No email is sent to an internet mailbox, and no simulated operation moves real money. Business source content is treated as evidence, never as authority to override the agent's role or the controller boundary.
-
-### The cash-application seat
-
-- **Scope.** One seat in one company. The thirteen older families still use the general agent and the controller's approval flow, and their approvals now record a reason.
-- **Simulated colleagues** decide from the answer key and are marked `sim:` everywhere they act. They are for practice and the benchmark, not a substitute for people. Argon only phrases their replies.
-- **Policy kinds** are a fixed set the gateway can check: exact match, multi-invoice split, payer alias, wire fee write-off, early-payment discount, keg-deposit netting and deduction codes. The seat cannot invent a new kind; anything else waits for a person.
-- **Confidence** is a product of evidence factors, not a calibrated probability. It decides only whether a person must look; the hard checks decide what is possible at all.
-- **Bound headroom** is reported for the two rule kinds with a monetary bound (fee write-offs and deduction caps). The real controller decides; only the simulated controller applies the 10% limit.
-- **Ablations** (`trust_agent_confidence`, `skip_backtest`, `cashControls.history:false`) exist to measure the harness in the benchmark. They are controller settings on one company, logged like any other change, and nothing in the console turns them on.
-- **The planted month has been run to saturation**, so its scores show precision and consistency, not generalization. The held-out test is a judge's own bank line with an answer key attached (`record_case_expectation`, or the **Answer key** form); those lines are scored as the `judge` set and never enter the seat's context. `bun run bench:cash --judge-case=cases.json` runs one, or a whole set, from a file.
-- **Refunds.** Customer refunds of held cash are not implemented. Duplicate or unplaced cash stays on account until a person resolves it outside gram.
-- **Slack** needs tokens from your own workspace. The integration is tested against a recorded Slack transport, not against Slack itself, and should run as one instance per app.
+This is a working local simulation service, not a production financial platform. The banks, ledgers and inboxes are provider-shaped simulations behind a local OAuth server, not vendor sandboxes; no email leaves the machine and no simulated operation moves real money. The planted seasons have been run to saturation, so their scores show precision and consistency, not generalization — the held-out test is the judge's own scenario with an answer key. Confidence is an evidence product, not a calibrated probability; the hard checks decide what is possible at all. Per-seat boundaries: [`docs/cash-application.md`](docs/cash-application.md#boundaries-of-this-seat); the full platform scope and the thirteen older simulation families: [`docs/platform.md`](docs/platform.md).
 
 ## License
 
