@@ -68,7 +68,7 @@ export function renderWork(content, ctx) {
   const card = content.folder(seat.title + ' · ' + seat.company, { root: true, wide: true });
   card.text('Seat', seat.one_line).host.classList.add('prose');
   const metrics = ctx.child(card, 'metrics');
-  for (const [label, value] of [['Posted', s.work.posted], ['Waiting on people', s.work.proposed + s.work.needs_info + s.work.escalated], ['In its queue', s.work.new + s.work.answered + s.work.rejected], ['Policies in force', s.policies_active]]) metrics.text(label, value).host.classList.add('metric');
+  for (const [label, value] of [['Done (posted)', s.work.posted], ['Waiting on people', s.work.proposed + s.work.needs_info + s.work.escalated], ['In its queue', s.work.new + s.work.answered + s.work.rejected], ['Rules it follows', s.policies_active]]) metrics.text(label, value).host.classList.add('metric');
   card.toggle('On duty', Boolean(seat.autonomy.enabled), value => ctx.work({ type: 'seat_configure', enabled: value }));
   card.text('Status', [
     status.running_run ? 'Working a shift now' : seat.autonomy.enabled ? 'Waiting for work' : 'Off duty',

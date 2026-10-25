@@ -65,10 +65,10 @@ export function renderBooks(content, ctx) {
   const data = status?.data, fava = data?.fava;
   const head = ctx.child(content, 'books-head');
   const summary = data?.available
-    ? data.journals + ' posted journals across ' + data.accounts + ' accounts, through ' + data.through + '. A read-only Beancount projection: gram\'s gateway is the only writer, and the file is rewritten after every posting.'
+    ? 'The company\'s accounting records: ' + data.journals + ' entries across ' + data.accounts + ' accounts, through ' + data.through + '. gram writes every entry; this page is a read-only view (a Beancount ledger).'
     : status?.error || data?.reason || 'Exporting the books…';
-  const check = fava?.errors === 0 ? 'Fava check: 0 errors. Every account\'s journals add up to the balance gram holds.'
-    : fava?.errors > 0 ? 'Fava check: ' + fava.errors + ' error' + (fava.errors === 1 ? '' : 's') + '. ' + fava.error_messages.join(' · ')
+  const check = fava?.errors === 0 ? 'Automatic check: 0 errors. Every account adds up — the books balance.'
+    : fava?.errors > 0 ? 'Automatic check: ' + fava.errors + ' error' + (fava.errors === 1 ? '' : 's') + '. ' + fava.error_messages.join(' · ')
     : fava?.reason || (fava ? 'Fava is ' + fava.state + '…' : '');
   head.text('Books', summary + (check ? '\n' + check : '')).host.classList.add('prose', 'books-summary');
   const actions = ctx.child(head, 'compact-actions books-actions');

@@ -85,7 +85,7 @@ const list = value => Array.isArray(value) ? value : [];
 const root = new Surface(document.querySelector('#app'));
 const state = { boot: null, snapshot: null, world: '', view: 'overview', busy: false, notice: 'Loading…', draft: {}, finance: 'payments', recordSystem: 'gmail', recordFeed: 'message', records: null, detail: null, page: {}, search: {}, compose: null, generated: null, files: [] };
 const views = ['overview', 'work', 'connections', 'mailbox', 'finance', 'books', 'procurement', 'sources', 'agent', 'delivery', 'audit', 'create', 'documents', 'favorites', 'settings'];
-const labels = { overview: 'Overview', work: 'Work', connections: 'Connections', mailbox: 'Inbox', finance: 'Finance', books: 'Books', procurement: 'Procurement', sources: 'Sources', agent: 'Agent', delivery: 'Delivery', audit: 'Audit', create: 'New company', documents: 'Files', favorites: 'Favorites', settings: 'Settings' };
+const labels = { overview: 'Overview', work: 'Work', connections: 'Connections', mailbox: 'Inbox', finance: 'Money', books: 'Books', procurement: 'Purchasing', sources: 'Data sources', agent: 'Agent', delivery: 'Notifications', audit: 'Audit trail', create: 'New company', documents: 'Files', favorites: 'Favorites', settings: 'Settings' };
 let rail, content, statusControl, detailSurface, resultControl;
 const workspace = new WorkspaceStore();
 const tabState = new Map(), transientRecords = new Map();
@@ -439,7 +439,7 @@ function toggleAssistant() {
 }
 function renderSidebar() {
   const head = child(rail, 'rail-header');
-  head.action('gram', () => go(state.world ? 'overview' : 'create'), { className: 'brand' });
+  head.action('gram', () => go(state.world ? 'overview' : 'create'), { className: 'brand', icon: 'logo' });
   const actions = child(head, 'rail-actions');
   actions.action('Collapse sidebar', toggleSidebar, { icon: 'sidebar', className: 'icon-button' });
   actions.action('Search workspace', () => openSearch(), { icon: 'search', className: 'icon-button', title: 'Search workspace · ⌘K' });
@@ -751,7 +751,7 @@ function renderAssistant(layout) {
   else if (selected) renderAgentResponse(body, selected, () => { view.task = true; render(); focusAssistantReading(); });
   else {
     const suggestions = child(body, 'assistant-suggestions');
-    for (const [label, prompt] of [['Reconcile accounts', 'Reconcile payments, bank activity, and the ledger. Report unresolved items with evidence.'], ['Review open items', 'Review pending operations and approval requests. Summarize unresolved items with evidence.'], ['Check invoice matches', 'Review supplier invoices against purchase orders and goods receipts. Identify match exceptions with source evidence.']]) suggestions.action(label, () => { workspace.updateAssistantDraft(spaceId(), prompt); render(); }, { icon: 'agent' });
+    for (const [label, prompt] of [['Does the bank match our books?', 'Reconcile payments, bank activity, and the ledger. Report unresolved items with evidence.'], ['What needs my attention?', 'Review pending operations and approval requests. Summarize unresolved items with evidence.'], ['Any billing mismatches?', 'Review supplier invoices against purchase orders and goods receipts. Identify match exceptions with source evidence.']]) suggestions.action(label, () => { workspace.updateAssistantDraft(spaceId(), prompt); render(); }, { icon: 'agent' });
   }
   trackScroll(body, spaceId() + ':agent:' + (view.history ? 'history' : (view.task ? 'task:' : '') + (selected?.id || 'empty')), view.history ? 'Run history' : view.task ? 'Original task' : 'Agent response');
   const composer = child(assistant, 'assistant-compose');
@@ -858,12 +858,13 @@ function renderOverview() {
   const w = world(), s = state.snapshot.summary;
   const company = content.folder(w.name, { root: true, wide: true });
   const metrics = child(company, 'metrics');
-  for (const [label, value] of [['Available cash', money(s.available_cash_minor ?? s.cash_minor)], ['Receivables', money(s.receivables_minor)], ['Payables', money(s.payables_minor)], ['Pending', s.pending_operations]]) metrics.text(label, value).host.classList.add('metric');
+  company.text('At a glance', 'The company\'s money right now: cash in the bank, what customers owe us, and what we owe others.').host.classList.add('prose');
+  for (const [label, value] of [['Cash on hand', money(s.available_cash_minor ?? s.cash_minor)], ['Customers owe us', money(s.receivables_minor)], ['We owe others', money(s.payables_minor)], ['Pending actions', s.pending_operations]]) metrics.text(label, value).host.classList.add('metric');
   const context = company.folder('Company details', { open: false });
   context.text('Scenario', state.boot.scenarios.find(item => item.kind === w.kind)?.name || pretty(w.kind));
   if (w.narrative || w.description) context.text('Context', w.narrative || w.description);
-  context.text('Reserved cash', money(s.reserved_minor)); context.text('Refund obligations', money(s.refundable_minor)); context.text('Awaiting posting', s.unposted_settlements || 0);
-  context.folder('Reconciliation', { open: false }).text('Summary', s);
+  context.text('Reserved cash', money(s.reserved_minor)); context.text('Refunds we may owe', money(s.refundable_minor)); context.text('Sales not yet in the books', s.unposted_settlements || 0);
+  context.folder('Bank matching (reconciliation)', { open: false }).text('Summary', s);
   const control = company.folder('Simulation', { open: false });
   control.text('Time', new Date(w.now).toISOString().replace('T', ' ').replace(':00.000Z', ' UTC'));
   control.buttons([['Advance 1 hour', () => act({ type: 'advance_time', hours: 1 })], ['Advance 24 hours', () => act({ type: 'advance_time', hours: 24 })]]);
@@ -957,11 +958,13 @@ function renderMailForm(parent) {
   }], ['Close draft', () => { const tab = currentTab(); if (tab?.kind === 'compose') closeTab(activePane().id, tab.id); else { state.compose = null; render(); } }]]);
 }
 const financeCollections = ['payments', 'refunds', 'bankTransactions', 'journals', 'accounts', 'invoices', 'bills', 'operations', 'creditNotes', 'disputes', 'paymentReturns'];
+const financeLabels = { payments: 'Money in (payments)', refunds: 'Refunds', bankTransactions: 'Bank activity', journals: 'Bookkeeping entries (journals)', accounts: 'Accounts', invoices: 'Invoices we sent', bills: 'Bills we owe', operations: 'Pending operations', creditNotes: 'Credit notes', disputes: 'Disputes', paymentReturns: 'Bounced payments' };
 function renderFinance() {
-  const pane = content.folder('Finance', { root: true, wide: true });
-  pane.select('Collection', state.finance, financeCollections.map(value => ({ value, label: pretty(value) })), value => { state.finance = value; state.detail = null; render(); });
+  const pane = content.folder('Money', { root: true, wide: true });
+  pane.text('What this is', 'Every money record in one place. Pick a list below; plain names first, the accounting term in parentheses.').host.classList.add('prose');
+  pane.select('Show', state.finance, financeCollections.map(value => ({ value, label: financeLabels[value] || pretty(value) })), value => { state.finance = value; state.detail = null; render(); });
   renderFinancialAction(pane);
-  browse(content, pretty(state.finance), records(state.finance), 'finance-' + state.finance);
+  browse(content, financeLabels[state.finance] || pretty(state.finance), records(state.finance), 'finance-' + state.finance);
 }
 function amount(value, field = 'Amount (USD)') { const cents = Math.round(Number(value) * 100); if (!/^\d+(\.\d{1,2})?$/.test(String(value)) || !Number.isSafeInteger(cents) || cents <= 0) invalid(field, 'Enter a positive amount with up to two decimal places.'); return cents; }
 function renderFinancialAction(parent) {

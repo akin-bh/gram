@@ -2,7 +2,7 @@ import { mountAgentOrb } from './agent-orb.js';
 
 const actions = {
   refund: 'Requesting refund', pay_bill: 'Requesting payment', collect_invoice: 'Collecting payment',
-  post_journal: 'Posting journal', send_email: 'Sending message', receive_email: 'Receiving message',
+  post_journal: 'Updating the books', send_email: 'Sending message', receive_email: 'Receiving message',
   decide_approval: 'Recording decision', advance_time: 'Advancing time', set_fault: 'Changing connection',
   close_period: 'Closing period', reopen_period: 'Reopening period', rename_company: 'Renaming company',
   cancel_event: 'Cancelling event', issue_credit_note: 'Issuing credit note', open_dispute: 'Opening dispute',
@@ -14,8 +14,8 @@ const actions = {
   record_payroll_time: 'Recording approved time', calculate_payroll: 'Calculating payroll', cancel_payroll: 'Cancelling payroll',
   execute_payroll: 'Requesting payroll payment', remit_payroll_taxes: 'Requesting tax payment',
   record_bank_activity: 'Recording bank activity', record_bank_statement: 'Recording bank statement', replace_bank_statement: 'Replacing bank statement',
-  match_statement_line: 'Matching statement line', unmatch_statement_line: 'Unmatching statement line',
-  prepare_reconciliation: 'Preparing reconciliation', close_reconciliation: 'Closing reconciliation', reopen_reconciliation: 'Reopening reconciliation',
+  match_statement_line: 'Matching a bank line', unmatch_statement_line: 'Unmatching a bank line',
+  prepare_reconciliation: 'Starting a bank match', close_reconciliation: 'Finishing a bank match', reopen_reconciliation: 'Reopening a bank match',
 };
 const terminals = {
   completed: { label: 'Completed', tone: 'success' },

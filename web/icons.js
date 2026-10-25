@@ -38,8 +38,22 @@ const paths = {
 const aliases = { books: 'book', work: 'inbox', overview: 'grid', finance: 'wallet', procurement: 'box', sources: 'files', agent: 'sparkles', delivery: 'send', audit: 'check', create: 'plus' };
 const namespace = 'http://www.w3.org/2000/svg';
 
+/** The Gram mark: an ink tile holding two linked cream squares. Theme overrides via --logo-tile/--logo-square. */
+function logo() {
+  const svg = document.createElementNS(namespace, 'svg');
+  for (const [key, value] of Object.entries({ width: '18', height: '18', viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true', focusable: 'false' })) svg.setAttribute(key, value);
+  for (const [x, y, size, radius, fill] of [[1, 1, 22, 6.5, 'var(--logo-tile, #1b1b19)'], [4.8, 5.1, 7.9, 2.4, 'var(--logo-square, #f0efec)'], [11.3, 11, 7.9, 2.4, 'var(--logo-square, #f0efec)']]) {
+    const rect = document.createElementNS(namespace, 'rect');
+    for (const [key, value] of Object.entries({ x, y, width: size, height: size, rx: radius })) rect.setAttribute(key, String(value));
+    rect.style.fill = fill;
+    svg.append(rect);
+  }
+  return svg;
+}
+
 /** A fresh, decorative SVG. Accessible names belong on the containing control. */
 export function icon(name) {
+  if (name === 'logo') return logo();
   const svg = document.createElementNS(namespace, 'svg');
   for (const [key, value] of Object.entries({ width: '18', height: '18', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.5', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' })) svg.setAttribute(key, value);
   const canonical = Object.prototype.hasOwnProperty.call(aliases, name) ? aliases[name] : name;
