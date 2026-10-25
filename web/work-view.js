@@ -66,7 +66,8 @@ export function renderWork(content, ctx) {
   if (!seat) { const pane = content.folder('Work', { root: true, wide: true }); pane.text('Seat', 'This company has no autonomous seat. Create a cash-application company to see one at work.').host.classList.add('prose'); return; }
   const items = w.workItems || [], questions = w.questions || [], policies = w.policies || [], status = ctx.status() || {};
   const card = content.folder(seat.title + ' · ' + seat.company, { root: true, wide: true });
-  card.text('Seat', seat.one_line).host.classList.add('prose');
+  card.text('What it does', seat.one_line).host.classList.add('prose');
+  if (!seat.autonomy.enabled || seat.onboarding.status === 'pending') card.text('Getting started', 'Three steps: connect its systems under Access, switch On duty, and approve the rules it proposes under Policies. Then advance the bank feed at the bottom — the AI works everything else, and anything unclear appears under "Needs you".').host.classList.add('prose');
   const metrics = ctx.child(card, 'metrics');
   for (const [label, value] of [['Done (posted)', s.work.posted], ['Waiting on people', s.work.proposed + s.work.needs_info + s.work.escalated], ['In its queue', s.work.new + s.work.answered + s.work.rejected], ['Rules it follows', s.policies_active]]) metrics.text(label, value).host.classList.add('metric');
   card.toggle('On duty', Boolean(seat.autonomy.enabled), value => ctx.work({ type: 'seat_configure', enabled: value }));
@@ -118,7 +119,7 @@ export function renderWork(content, ctx) {
   });
 
   const proposed = policies.filter(row => row.status === 'proposed'), active = policies.filter(row => row.status === 'active');
-  const policyPane = content.folder('Policies · ' + active.length + ' in force' + (proposed.length ? ' · ' + proposed.length + ' proposed' : ''), { root: true, wide: true });
+  const policyPane = content.folder('Rules it follows (policies) · ' + active.length + ' in force' + (proposed.length ? ' · ' + proposed.length + ' proposed' : ''), { root: true, wide: true });
   if (!policies.length) policyPane.text('Policies', seat.onboarding.status === 'pending' ? 'None yet. When the seat goes on duty it learns them from the company\'s history and proposes them here.' : 'None').host.classList.add('prose');
   for (const policy of proposed) {
     const folder = policyPane.folder(policy.id + ' v' + policy.version + ' · ' + policy.title, { open: true }), d = ctx.draft('policy-' + policy.id + '@' + policy.version, { reason: '' });
@@ -154,6 +155,7 @@ export function renderWork(content, ctx) {
   for (const item of items.slice().reverse().slice(0, 30)) queue.action(item.id + ' · ' + item.title, () => ctx.openItem(item), { icon: 'finance', className: 'record-row', meta: stateLabels[item.state] + (item.decision?.kind === 'policy' ? ' · by policy' : item.decision?.kind === 'human' ? ' · by ' + actorLabel(item.decision.by) : '') });
 
   const feed = content.folder('Bank feed', { root: true, wide: true });
+  feed.text('How it works', 'The company runs on simulated time. Advance to the next sync and new bank activity arrives; the AI picks it up by itself.').host.classList.add('prose');
   const pending = (w.bankFeed || []).filter(row => !row.delivered_at);
   feed.text('Next sync', pending.length ? pending.length + ' lines scheduled · next ' + when(pending[0].arrives_at) : 'No scheduled lines');
   if (pending.length) feed.buttons([['Advance to the next sync', () => ctx.act(pending[0].arrives_at > w.now ? { type: 'advance_to', at: pending[0].arrives_at } : { type: 'advance_time', hours: 1 })]]);
@@ -243,6 +245,7 @@ export function renderWork(content, ctx) {
   }
 
   const why = content.folder('Why?', { root: true, wide: true }), q = ctx.draft('why', { subject: '' });
+  why.text('What this is', 'Enter any record ID and get its full story from the log: every step, who did it, under which rule, and why.').host.classList.add('prose');
   why.text('Record', q.subject, value => q.subject = value, 'INV-2003, WI-5532, JPM-88310442, pol-001…');
   why.buttons([['Explain', async () => { if (!q.subject.trim()) throw Object.assign(Error('Enter a record ID.'), { field: 'Record' }); whyResults.set(ctx.worldId() + ':' + q.subject.trim(), await ctx.api(ctx.path('/why?subject=' + encodeURIComponent(q.subject.trim())))); ctx.rerender(); }]]);
   const result = whyResults.get(ctx.worldId() + ':' + q.subject.trim());

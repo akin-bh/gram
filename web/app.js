@@ -1358,17 +1358,18 @@ function renderAudit() {
 function renderCreate() {
   const d = draft('create', { name: '', kind: 'tour-settlements', seed: '42', orderCount: 24, cash: '', threshold: '', cancelEvent: true, narrative: '' });
   const pane = content.folder('New company', { root: true });
+  pane.text('What this is', 'Create a company for the AI to work at. Scenarios marked "Seat" come with an AI finance officer that learns the job and works on its own.').host.classList.add('prose');
   pane.text('Company name', d.name, value => d.name = value);
   pane.select('Scenario', d.kind, [...state.boot.scenarios].sort((a, b) => Number((state.boot.seats || []).includes(b.kind)) - Number((state.boot.seats || []).includes(a.kind))).map(s => ({ value: s.kind, label: ((state.boot.seats || []).includes(s.kind) ? 'Seat · ' : 'Other simulation · ') + s.name })), value => { d.kind = value; d.orderCount = value === 'procurement-matching' && !d.recordCountEdited ? 4 : Math.min(d.orderCount, value === 'ticket-cancellation' ? 2000 : 200); state.generated = null; render(); });
   pane.folder('Scenario details', { open: false }).text('Description', state.boot.scenarios.find(s => s.kind === d.kind)?.description);
-  pane.text('Seed', d.seed, value => d.seed = value);
-  pane.slider(d.kind === 'procurement-matching' ? 'Purchase orders' : 'Record count', d.orderCount, 1, d.kind === 'ticket-cancellation' ? 2000 : 200, 1, value => { d.orderCount = value; d.recordCountEdited = true; });
+  pane.text('Random seed', d.seed, value => d.seed = value, 'Any number; the same seed recreates the same company');
+  pane.slider(d.kind === 'procurement-matching' ? 'Purchase orders' : 'How much activity', d.orderCount, 1, d.kind === 'ticket-cancellation' ? 2000 : 200, 1, value => { d.orderCount = value; d.recordCountEdited = true; });
   pane.text('Opening cash (USD)', d.cash, value => d.cash = value, 'Scenario default');
-  pane.text('Approval threshold (USD)', d.threshold, value => d.threshold = value, 'Scenario default');
+  pane.text('Needs approval above (USD)', d.threshold, value => d.threshold = value, 'Scenario default');
   if (d.kind === 'ticket-cancellation') pane.toggle('Event starts cancelled', d.cancelEvent, value => d.cancelEvent = value);
   pane.folder('Company context', { open: false }).text('Notes', d.narrative, value => d.narrative = value);
   pane.buttons([['Create company', async () => {
-    if (!d.name.trim()) invalid('Company name', 'Enter a company name.'); if (!d.seed.trim()) invalid('Seed', 'Enter a seed.');
+    if (!d.name.trim()) invalid('Company name', 'Enter a company name.'); if (!d.seed.trim()) invalid('Random seed', 'Enter any number.');
     const optionalMoney = value => { if (String(value) === '0') return 0; return amount(value); };
     const input = { ...(state.generated || {}), name: d.name.trim(), kind: d.kind, seed: d.seed, orderCount: d.orderCount, cancelEvent: d.cancelEvent };
     if (d.narrative.trim()) input.narrative = d.narrative.trim(); else delete input.narrative;
@@ -1376,10 +1377,10 @@ function renderCreate() {
     if (d.threshold !== '') input.approvalThresholdMinor = optionalMoney(d.threshold);
     const result = await post('/api/worlds', input); state.boot = await api('/api/bootstrap'); state.view = (state.boot.seats || []).includes(input.kind) ? 'work' : 'overview'; state.generated = null; await chooseWorld(result.world.id); notify('Company created');
   }]]);
-  const generator = content.folder('From a brief', { root: true });
+  const generator = content.folder('Or describe it in words', { root: true });
   const prompt = draft('generate', { prompt: '' });
-  generator.text('Prompt', prompt.prompt, value => prompt.prompt = value, 'Company and starting conditions');
-  generator.buttons([['Generate configuration', async () => {
+  generator.text('Describe the company', prompt.prompt, value => prompt.prompt = value, 'e.g. "A small concert venue in Austin with 40 shows a year"');
+  generator.buttons([['Generate with AI', async () => {
     const result = await post('/api/generate', { prompt: prompt.prompt }, { signal: AbortSignal.timeout(310000) }); const scenario = result.scenario || result;
     state.generated = scenario; Object.assign(d, { name: scenario.name || d.name, kind: scenario.kind || d.kind, seed: String(scenario.seed ?? d.seed), orderCount: scenario.orderCount ?? d.orderCount, narrative: scenario.narrative || '', cancelEvent: scenario.cancelEvent ?? true });
     if ((scenario.initialCashMinor ?? scenario.startingCashMinor) !== undefined) d.cash = String((scenario.initialCashMinor ?? scenario.startingCashMinor) / 100);
