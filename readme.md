@@ -2,9 +2,9 @@
 
 **Your AI finance officer.** gram does the daily work of a finance hire: it reads the bank, matches money to invoices, keeps the books, and asks a person when it isn't sure. It can never approve, post or move money itself — a person approves, the system posts, and every step is logged so you can always ask "why?".
 
-Built at **Cal Hacks 13.0**.
+Built at **Cal Hacks 13.0**. **▶ Watch the one-minute demo: https://youtu.be/YDLpT_DECP0**
 
-![The Work view: the seat, its status, and what waits on a person](docs/gram-work.png)
+[![The gram console: plain-English finances for Live Nation Concerts](docs/gram-overview.jpg)](https://youtu.be/YDLpT_DECP0)
 
 ## Tracks
 
